@@ -22,6 +22,17 @@ cleverness or unnecessary abstraction.
 - Prefer CI enforcement with `-D warnings` rather than `#![deny(warnings)]` in
   source files.
 
+## Application Versioning
+
+- For application crates, always add a `build.rs`.
+- Use `build.rs` to generate robust, detailed version metadata at build time.
+- The build script should capture both the current git SHA and the build date.
+- Application version output should follow this format:
+  `<application> x.y.z (YYYY-MM-DD, <gitsha>[-dirty])`
+- Include the `-dirty` suffix when the working tree has uncommitted changes.
+- Treat this as the default for binaries unless the repository already has a
+  stronger established versioning mechanism.
+
 ## Style and Conventions
 
 - Follow idiomatic Rust and the Rust API Guidelines.
