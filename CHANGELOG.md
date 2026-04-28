@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added AArch64-aware disassembly invocation and branch normalization.
+
 ### Documentation
 
 - Added the initial `README.md` with project overview, requirements,

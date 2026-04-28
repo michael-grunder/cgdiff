@@ -7,7 +7,8 @@ use crate::compare::{
 };
 use crate::disassembly::{
     BinaryAnalysis, FunctionBuilder, FunctionDisassembly, ParsedInstruction,
-    build_objdump_command, finalize_function, normalize_instruction_text,
+    TargetArchitecture, build_objdump_command_for_arch,
+    detect_target_architecture, finalize_function, normalize_instruction_text,
     parse_function_header, parse_instruction_line, parse_instruction_mnemonic,
     parse_instruction_text,
 };
@@ -19,7 +20,9 @@ use crate::output::{
 use crate::tui::App;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::Path;
+use tempfile::NamedTempFile;
 
 #[test]
 fn parses_function_headers() {
@@ -60,6 +63,19 @@ fn parses_instruction_address_and_text() {
 }
 
 #[test]
+fn parses_aarch64_instruction_address_and_text() {
+    let instruction =
+        parse_instruction_line("   1010:\tb.eq\t0x1020 <worker+0x20>")
+            .expect("expected instruction");
+    let mnemonic = parse_instruction_mnemonic(&instruction.text)
+        .expect("expected mnemonic");
+
+    assert_eq!(instruction.address, Some(0x1010));
+    assert_eq!(instruction.text, "b.eq\t0x1020 <worker+0x20>");
+    assert_eq!(mnemonic, "b.eq");
+}
+
+#[test]
 fn normalizes_intra_function_jump_targets() {
     let labels = local_labels_for(&[(0x1000, ".L0000"), (0x1010, ".L0001")]);
     let instruction =
@@ -67,6 +83,31 @@ fn normalizes_intra_function_jump_targets() {
 
     assert_eq!(instruction.text, "jne .L0001");
     assert_eq!(instruction.local_target, Some(0x1010));
+}
+
+#[test]
+fn normalizes_aarch64_branch_targets() {
+    let labels = local_labels_for(&[(0x1000, ".L0000"), (0x1010, ".L0001")]);
+    let conditional =
+        normalize_instruction_text("b.eq 0x1010 <foo+0x10>", &labels);
+    let compare =
+        normalize_instruction_text("cbz x0, 0x1010 <foo+0x10>", &labels);
+
+    assert_eq!(conditional.text, "b.eq .L0001");
+    assert_eq!(conditional.local_target, Some(0x1010));
+    assert_eq!(compare.text, "cbz x0, .L0001");
+    assert_eq!(compare.local_target, Some(0x1010));
+}
+
+#[test]
+fn normalizes_aarch64_symbol_call_targets() {
+    let instruction = normalize_instruction_text(
+        "bl 0x4dac0 <redisAppendFormattedCommand$plt>",
+        &HashMap::new(),
+    );
+
+    assert_eq!(instruction.text, "bl sym:redisAppendFormattedCommand$plt");
+    assert_eq!(instruction.local_target, None);
 }
 
 #[test]
@@ -141,8 +182,12 @@ fn identical_detection_ignores_moved_function_addresses() {
 
 #[test]
 fn builds_gnu_objdump_command_with_intel_syntax() {
-    let command =
-        build_objdump_command(Path::new("objdump"), Path::new("binary"));
+    let command = build_objdump_command_for_arch(
+        Path::new("objdump"),
+        Path::new("binary"),
+        TargetArchitecture::X86,
+        "x86_64",
+    );
     let args: Vec<OsString> = command.get_args().map(OsString::from).collect();
 
     assert_eq!(
@@ -159,8 +204,12 @@ fn builds_gnu_objdump_command_with_intel_syntax() {
 
 #[test]
 fn builds_llvm_objdump_command_with_intel_syntax() {
-    let command =
-        build_objdump_command(Path::new("llvm-objdump"), Path::new("binary"));
+    let command = build_objdump_command_for_arch(
+        Path::new("llvm-objdump"),
+        Path::new("binary"),
+        TargetArchitecture::X86,
+        "x86_64",
+    );
     let args: Vec<OsString> = command.get_args().map(OsString::from).collect();
 
     assert_eq!(
@@ -172,6 +221,63 @@ fn builds_llvm_objdump_command_with_intel_syntax() {
             OsString::from("--x86-asm-syntax=intel"),
             OsString::from("binary"),
         ]
+    );
+}
+
+#[test]
+fn omits_intel_syntax_for_aarch64_targets() {
+    let command = build_objdump_command_for_arch(
+        Path::new("objdump"),
+        Path::new("binary"),
+        TargetArchitecture::Aarch64,
+        "x86_64",
+    );
+    let args: Vec<OsString> = command.get_args().map(OsString::from).collect();
+
+    assert_eq!(
+        args,
+        vec![
+            OsString::from("--disassemble"),
+            OsString::from("--demangle"),
+            OsString::from("--no-show-raw-insn"),
+            OsString::from("binary"),
+        ]
+    );
+}
+
+#[test]
+fn omits_intel_syntax_on_aarch64_hosts() {
+    let command = build_objdump_command_for_arch(
+        Path::new("objdump"),
+        Path::new("binary"),
+        TargetArchitecture::X86,
+        "aarch64",
+    );
+    let args: Vec<OsString> = command.get_args().map(OsString::from).collect();
+
+    assert_eq!(
+        args,
+        vec![
+            OsString::from("--disassemble"),
+            OsString::from("--demangle"),
+            OsString::from("--no-show-raw-insn"),
+            OsString::from("binary"),
+        ]
+    );
+}
+
+#[test]
+fn detects_elf_target_architecture() {
+    let x86 = temp_elf_binary(62);
+    let aarch64 = temp_elf_binary(183);
+
+    assert_eq!(
+        detect_target_architecture(x86.path()),
+        TargetArchitecture::X86
+    );
+    assert_eq!(
+        detect_target_architecture(aarch64.path()),
+        TargetArchitecture::Aarch64
     );
 }
 
@@ -671,6 +777,17 @@ fn prepared_comparison(name: &str, combined_score: f64) -> PreparedComparison {
         diff2_path: write_temp_disassembly(&format!("{name}-right\n"), "right")
             .expect("failed to create right temp file"),
     }
+}
+
+fn temp_elf_binary(machine: u16) -> NamedTempFile {
+    let mut file = NamedTempFile::new().expect("failed to create temp file");
+    let mut header = [0_u8; 64];
+    header[0..4].copy_from_slice(b"\x7fELF");
+    header[4] = 2;
+    header[5] = 1;
+    header[18..20].copy_from_slice(&machine.to_le_bytes());
+    file.write_all(&header).expect("failed to write ELF header");
+    file
 }
 
 #[test]

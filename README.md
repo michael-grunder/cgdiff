@@ -10,6 +10,8 @@ available for scripts or quick checks.
 ## Features
 
 - Compares executables or shared objects with `llvm-objdump` or GNU `objdump`.
+- Supports x86/x86-64 and AArch64 disassembly output; x86 Intel syntax flags
+  are only passed when the host and target can accept them.
 - Scores each shared function with combined, instruction-count, and
   instruction-order similarity values.
 - Sorts functions from least similar to most similar.

@@ -7,12 +7,19 @@ use std::sync::{LazyLock, mpsc};
 use std::thread;
 
 use anyhow::{Context, Result, anyhow, bail};
-use regex::Regex;
+use regex::{NoExpand, Regex};
 
 use crate::progress::{
     ProgressEvent, send_progress_finished, send_progress_processed,
     send_progress_start,
 };
+
+const EM_386: u16 = 3;
+const EM_X86_64: u16 = 62;
+const EM_AARCH64: u16 = 183;
+const MACHO_CPU_TYPE_X86: u32 = 7;
+const MACHO_CPU_TYPE_X86_64: u32 = 0x0100_0007;
+const MACHO_CPU_TYPE_ARM64: u32 = 0x0100_000c;
 
 static SYMBOL_TARGET_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?P<addr>0x[0-9a-fA-F]+|[0-9a-fA-F]+)\s+<(?P<sym>[^>]+)>")
@@ -58,6 +65,13 @@ pub(crate) struct FunctionBuilder {
 pub(crate) struct NormalizedInstruction {
     pub(crate) text: String,
     pub(crate) local_target: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetArchitecture {
+    X86,
+    Aarch64,
+    Other,
 }
 
 pub(crate) fn analyze_binary(
@@ -116,19 +130,156 @@ pub(crate) fn build_objdump_command(
     objdump: &Path,
     binary_path: &Path,
 ) -> Command {
+    build_objdump_command_for_arch(
+        objdump,
+        binary_path,
+        detect_target_architecture(binary_path),
+        std::env::consts::ARCH,
+    )
+}
+
+pub(crate) fn build_objdump_command_for_arch(
+    objdump: &Path,
+    binary_path: &Path,
+    target_architecture: TargetArchitecture,
+    host_architecture: &str,
+) -> Command {
     let mut command = Command::new(objdump);
     command
         .arg("--disassemble")
         .arg("--demangle")
         .arg("--no-show-raw-insn")
-        .args(x86_intel_syntax_args(objdump))
+        .args(x86_intel_syntax_args(
+            objdump,
+            target_architecture,
+            host_architecture,
+        ))
         .arg(binary_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
 }
 
-fn x86_intel_syntax_args(objdump: &Path) -> &'static [&'static str] {
+pub(crate) fn detect_target_architecture(
+    binary_path: &Path,
+) -> TargetArchitecture {
+    read_binary_header(binary_path)
+        .ok()
+        .and_then(|contents| detect_target_architecture_from_bytes(&contents))
+        .unwrap_or(TargetArchitecture::Other)
+}
+
+fn read_binary_header(binary_path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = fs::File::open(binary_path)?;
+    let mut contents = vec![0; 4096];
+    let bytes_read = file.read(&mut contents)?;
+    contents.truncate(bytes_read);
+    Ok(contents)
+}
+
+fn detect_target_architecture_from_bytes(
+    contents: &[u8],
+) -> Option<TargetArchitecture> {
+    detect_elf_architecture(contents)
+        .or_else(|| detect_macho_architecture(contents))
+}
+
+fn detect_elf_architecture(contents: &[u8]) -> Option<TargetArchitecture> {
+    if contents.len() < 20 || !contents.starts_with(b"\x7fELF") {
+        return None;
+    }
+
+    let machine = match contents.get(5).copied()? {
+        1 => u16::from_le_bytes([contents[18], contents[19]]),
+        2 => u16::from_be_bytes([contents[18], contents[19]]),
+        _ => return Some(TargetArchitecture::Other),
+    };
+
+    Some(match machine {
+        EM_386 | EM_X86_64 => TargetArchitecture::X86,
+        EM_AARCH64 => TargetArchitecture::Aarch64,
+        _ => TargetArchitecture::Other,
+    })
+}
+
+fn detect_macho_architecture(contents: &[u8]) -> Option<TargetArchitecture> {
+    if contents.len() < 8 {
+        return None;
+    }
+
+    match &contents[..4] {
+        [0xcf | 0xce, 0xfa, 0xed, 0xfe] => {
+            Some(macho_architecture_from_cpu_type(u32::from_le_bytes([
+                contents[4],
+                contents[5],
+                contents[6],
+                contents[7],
+            ])))
+        }
+        [0xfe, 0xed, 0xfa, 0xcf | 0xce] => {
+            Some(macho_architecture_from_cpu_type(u32::from_be_bytes([
+                contents[4],
+                contents[5],
+                contents[6],
+                contents[7],
+            ])))
+        }
+        [0xca, 0xfe, 0xba, 0xbe] => {
+            detect_fat_macho_architecture(contents, u32::from_be_bytes)
+        }
+        [0xbe, 0xba, 0xfe, 0xca] => {
+            detect_fat_macho_architecture(contents, u32::from_le_bytes)
+        }
+        _ => None,
+    }
+}
+
+fn detect_fat_macho_architecture(
+    contents: &[u8],
+    read_u32: fn([u8; 4]) -> u32,
+) -> Option<TargetArchitecture> {
+    if contents.len() < 8 {
+        return None;
+    }
+
+    let architecture_count =
+        usize::try_from(read_u32(contents[4..8].try_into().ok()?)).ok()?;
+    let mut detected = TargetArchitecture::Other;
+    for index in 0..architecture_count {
+        let offset = 8 + index.saturating_mul(20);
+        let cpu_type_bytes = contents.get(offset..offset + 4)?;
+        let cpu_type = read_u32(cpu_type_bytes.try_into().ok()?);
+        match macho_architecture_from_cpu_type(cpu_type) {
+            TargetArchitecture::Aarch64 => {
+                return Some(TargetArchitecture::Aarch64);
+            }
+            TargetArchitecture::X86 => detected = TargetArchitecture::X86,
+            TargetArchitecture::Other => {}
+        }
+    }
+
+    Some(detected)
+}
+
+const fn macho_architecture_from_cpu_type(cpu_type: u32) -> TargetArchitecture {
+    match cpu_type {
+        MACHO_CPU_TYPE_X86 | MACHO_CPU_TYPE_X86_64 => TargetArchitecture::X86,
+        MACHO_CPU_TYPE_ARM64 => TargetArchitecture::Aarch64,
+        _ => TargetArchitecture::Other,
+    }
+}
+
+fn x86_intel_syntax_args(
+    objdump: &Path,
+    target_architecture: TargetArchitecture,
+    host_architecture: &str,
+) -> &'static [&'static str] {
+    if target_architecture != TargetArchitecture::X86
+        || !matches!(host_architecture, "x86" | "x86_64")
+    {
+        return &[];
+    }
+
     match objdump.file_name().and_then(|name| name.to_str()) {
         Some(name) if name.starts_with("llvm-objdump") => {
             &["--x86-asm-syntax=intel"]
@@ -407,13 +558,22 @@ pub(crate) fn normalize_instruction_text(
     if let Some((address, symbol)) = parse_symbol_target(operands) {
         if let Some(label) = local_labels.get(&address) {
             return NormalizedInstruction {
-                text: format!("{mnemonic} {label}"),
+                text: format!(
+                    "{mnemonic} {}",
+                    normalize_symbol_target_operand(operands, label)
+                ),
                 local_target: Some(address),
             };
         }
 
         return NormalizedInstruction {
-            text: format!("{mnemonic} sym:{symbol}"),
+            text: format!(
+                "{mnemonic} {}",
+                normalize_symbol_target_operand(
+                    operands,
+                    &format!("sym:{symbol}"),
+                )
+            ),
             local_target: None,
         };
     }
@@ -478,6 +638,15 @@ fn parse_symbol_target(operands: &str) -> Option<(u64, String)> {
     Some((address, symbol))
 }
 
+fn normalize_symbol_target_operand(
+    operands: &str,
+    replacement: &str,
+) -> String {
+    collapse_whitespace(
+        &SYMBOL_TARGET_RE.replace(operands, NoExpand(replacement)),
+    )
+}
+
 fn parse_direct_address_operand(operands: &str) -> Option<u64> {
     let operand = operands.trim();
     if operand.contains('[') || operand.contains(',') {
@@ -493,8 +662,9 @@ fn collapse_whitespace(text: &str) -> String {
 }
 
 fn is_direct_control_flow_mnemonic(mnemonic: &str) -> bool {
+    let mnemonic = mnemonic.to_ascii_lowercase();
     matches!(
-        mnemonic.to_ascii_lowercase().as_str(),
+        mnemonic.as_str(),
         "call"
             | "jmp"
             | "ja"
@@ -532,5 +702,11 @@ fn is_direct_control_flow_mnemonic(mnemonic: &str) -> bool {
             | "loopnz"
             | "loopz"
             | "xbegin"
-    )
+            | "b"
+            | "bl"
+            | "cbnz"
+            | "cbz"
+            | "tbnz"
+            | "tbz"
+    ) || mnemonic.starts_with("b.")
 }
