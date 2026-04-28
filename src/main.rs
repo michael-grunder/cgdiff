@@ -965,31 +965,36 @@ fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
-    let rows = app.items.iter().map(|item| {
-        Row::new([
-            Cell::from(item.comparison.name.clone()),
-            Cell::from(format!("{:.3}", app.diff_mode.score(&item.comparison))),
-            Cell::from(if item.comparison.function1.is_some() {
-                "yes"
-            } else {
-                "no"
-            }),
-            Cell::from(if item.comparison.function2.is_some() {
-                "yes"
-            } else {
-                "no"
-            }),
-        ])
-    });
+    let show_presence_columns = app.include_unique_functions;
+    let table = if show_presence_columns {
+        let rows = app.items.iter().map(|item| {
+            Row::new([
+                Cell::from(item.comparison.name.clone()),
+                Cell::from(format!(
+                    "{:.3}",
+                    app.diff_mode.score(&item.comparison)
+                )),
+                Cell::from(if item.comparison.function1.is_some() {
+                    "yes"
+                } else {
+                    "no"
+                }),
+                Cell::from(if item.comparison.function2.is_some() {
+                    "yes"
+                } else {
+                    "no"
+                }),
+            ])
+        });
 
-    let widths = [
-        Constraint::Percentage(64),
-        Constraint::Length(10),
-        Constraint::Length(7),
-        Constraint::Length(7),
-    ];
-    let table = Table::new(rows, widths)
-        .header(
+        let widths = [
+            Constraint::Percentage(64),
+            Constraint::Length(10),
+            Constraint::Length(7),
+            Constraint::Length(7),
+        ];
+
+        Table::new(rows, widths).header(
             Row::new(["Function", app.diff_mode.label(), "Bin1", "Bin2"])
                 .style(
                     Style::default()
@@ -997,9 +1002,30 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 ),
         )
-        .block(Block::default().title("Functions").borders(Borders::ALL))
-        .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::Black))
-        .highlight_symbol(">> ");
+    } else {
+        let rows = app.items.iter().map(|item| {
+            Row::new([
+                Cell::from(item.comparison.name.clone()),
+                Cell::from(format!(
+                    "{:.3}",
+                    app.diff_mode.score(&item.comparison)
+                )),
+            ])
+        });
+
+        let widths = [Constraint::Percentage(78), Constraint::Length(10)];
+
+        Table::new(rows, widths).header(
+            Row::new(["Function", app.diff_mode.label()]).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        )
+    }
+    .block(Block::default().title("Functions").borders(Borders::ALL))
+    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::Black))
+    .highlight_symbol(">> ");
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
