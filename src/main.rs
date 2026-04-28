@@ -69,6 +69,9 @@ struct Cli {
     /// Include shared functions with identical instruction text in the TUI.
     #[arg(long = "include-identical-functions")]
     include_identical_functions: bool,
+    /// Pre-filter functions by case-insensitive substring or `/regex/`.
+    #[arg(long = "filter")]
+    filter: Option<String>,
     /// Dump the sorted comparison table to stdout instead of opening the TUI.
     #[arg(long = "stdio")]
     stdio: bool,
@@ -287,6 +290,19 @@ impl SearchFilter {
     }
 }
 
+fn compile_cli_filter(query: Option<&str>) -> Result<Option<SearchFilter>> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+
+    let filter = SearchFilter::compile(query);
+    if let Some(error) = filter.error_message() {
+        bail!("invalid --filter value {query:?}: {error}");
+    }
+
+    Ok(Some(filter))
+}
+
 fn parse_regex_pattern(query: &str) -> Option<&str> {
     if query.len() >= 2 && query.starts_with('/') && query.ends_with('/') {
         Some(&query[1..query.len() - 1])
@@ -316,27 +332,28 @@ impl App {
         diff_mode: DiffMode,
         include_unique_functions: bool,
         include_identical_functions: bool,
+        initial_search_query: String,
     ) -> Self {
         sort_comparisons(&mut items, diff_mode);
-        let mut table_state = TableState::default();
-        let filtered_indices = (0..items.len()).collect::<Vec<_>>();
-        if !filtered_indices.is_empty() {
-            table_state.select(Some(0));
-        }
-
-        Self {
+        let mut app = Self {
             items,
-            filtered_indices,
+            filtered_indices: Vec::new(),
             diff_mode,
-            table_state,
+            table_state: TableState::default(),
             should_quit: false,
             overlay: None,
             include_unique_functions,
             include_identical_functions,
-            search_query: String::new(),
+            search_query: initial_search_query,
             search_filter: SearchFilter::Empty,
             search_state: None,
+        };
+        app.rebuild_filter(None);
+        if !app.filtered_indices.is_empty() {
+            app.table_state.select(Some(0));
         }
+
+        app
     }
 
     fn selected(&self) -> Option<&PreparedComparison> {
@@ -492,6 +509,7 @@ impl App {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let filter = compile_cli_filter(cli.filter.as_deref())?;
     let objdump = select_objdump(cli.objdump.as_deref())?;
 
     let (progress_tx, progress_rx) = mpsc::channel();
@@ -520,6 +538,7 @@ fn main() -> Result<()> {
         &analysis_two,
         cli.include_unique_functions,
         cli.include_identical_functions,
+        filter.as_ref(),
     );
     if cli.stdio {
         dump_comparisons(io::stdout(), &comparisons, cli.diff_mode)?;
@@ -532,6 +551,7 @@ fn main() -> Result<()> {
         cli.diff_mode,
         cli.include_unique_functions,
         cli.include_identical_functions,
+        cli.filter.as_deref().unwrap_or_default(),
         &cli.editor,
     )?;
 
@@ -900,11 +920,13 @@ fn build_comparisons(
     analysis_two: &BinaryAnalysis,
     include_unique_functions: bool,
     include_identical_functions: bool,
+    filter: Option<&SearchFilter>,
 ) -> Vec<FunctionComparison> {
     let names = analysis_one
         .functions
         .keys()
         .chain(analysis_two.functions.keys())
+        .filter(|name| filter.is_none_or(|filter| filter.matches(name)))
         .cloned()
         .collect::<BTreeSet<_>>();
 
@@ -1177,6 +1199,7 @@ fn run_tui(
     diff_mode: DiffMode,
     include_unique_functions: bool,
     include_identical_functions: bool,
+    initial_search_query: &str,
     editor: &str,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
@@ -1185,6 +1208,7 @@ fn run_tui(
         diff_mode,
         include_unique_functions,
         include_identical_functions,
+        initial_search_query.to_owned(),
     );
 
     loop {
@@ -1563,11 +1587,13 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, DiffMode, FunctionComparison, FunctionDisassembly,
-        PreparedComparison, build_objdump_command, dump_comparisons, lcs_len,
-        order_similarity, parse_function_header, parse_instruction_mnemonic,
+        App, BinaryAnalysis, DiffMode, FunctionComparison, FunctionDisassembly,
+        PreparedComparison, SearchFilter, build_comparisons,
+        build_objdump_command, dump_comparisons, lcs_len, order_similarity,
+        parse_function_header, parse_instruction_mnemonic,
         parse_instruction_text, weighted_jaccard, write_temp_disassembly,
     };
+    use std::collections::HashMap;
     use std::ffi::OsString;
     use std::path::Path;
 
@@ -1749,6 +1775,7 @@ mod tests {
             DiffMode::Combined,
             false,
             false,
+            String::new(),
         );
 
         app.start_search();
@@ -1779,6 +1806,7 @@ mod tests {
             DiffMode::Combined,
             false,
             false,
+            String::new(),
         );
 
         app.start_search();
@@ -1804,6 +1832,7 @@ mod tests {
             DiffMode::Combined,
             false,
             false,
+            String::new(),
         );
 
         app.start_search();
@@ -1828,6 +1857,7 @@ mod tests {
             DiffMode::Combined,
             false,
             false,
+            String::new(),
         );
 
         app.start_search();
@@ -1877,6 +1907,64 @@ mod tests {
         assert!(first.ends_with(" yes    no"));
         assert!(second.starts_with("beta"));
         assert!(second.ends_with(" yes   yes"));
+    }
+
+    #[test]
+    fn app_applies_initial_filter() {
+        let app = App::new(
+            vec![
+                prepared_comparison("AlphaRelay", 0.1),
+                prepared_comparison("relay_worker", 0.2),
+                prepared_comparison("other", 0.3),
+            ],
+            DiffMode::Combined,
+            false,
+            false,
+            "relay".to_owned(),
+        );
+
+        assert_eq!(app.search_query, "relay");
+        assert_eq!(
+            visible_names(&app),
+            vec!["AlphaRelay".to_owned(), "relay_worker".to_owned()]
+        );
+        assert_eq!(
+            app.selected().map(|item| item.comparison.name.as_str()),
+            Some("AlphaRelay")
+        );
+    }
+
+    #[test]
+    fn build_comparisons_pre_filters_names() {
+        let analysis_one = BinaryAnalysis {
+            functions: HashMap::from([
+                ("AlphaRelay".to_owned(), synthetic_function()),
+                ("other".to_owned(), synthetic_function()),
+            ]),
+        };
+        let analysis_two = BinaryAnalysis {
+            functions: HashMap::from([
+                ("relay_worker".to_owned(), synthetic_function()),
+                ("other".to_owned(), synthetic_function()),
+            ]),
+        };
+        let filter = SearchFilter::compile("relay");
+
+        let comparisons = build_comparisons(
+            &analysis_one,
+            &analysis_two,
+            true,
+            true,
+            Some(&filter),
+        );
+
+        assert_eq!(
+            comparisons
+                .iter()
+                .map(|comparison| comparison.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AlphaRelay", "relay_worker"]
+        );
     }
 
     fn visible_names(app: &App) -> Vec<String> {
