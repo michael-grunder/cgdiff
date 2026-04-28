@@ -69,6 +69,9 @@ struct Cli {
     /// Include shared functions with identical instruction text in the TUI.
     #[arg(long = "include-identical-functions")]
     include_identical_functions: bool,
+    /// Dump the sorted comparison table to stdout instead of opening the TUI.
+    #[arg(long = "stdio")]
+    stdio: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -507,7 +510,7 @@ fn main() -> Result<()> {
     drop(progress_tx);
 
     let mut states = HashMap::new();
-    render_progress(&progress_rx, &mut states)?;
+    render_progress(&progress_rx, &mut states, cli.stdio)?;
 
     let analysis_one = join_analysis(handle_one, "binary-1")?;
     let analysis_two = join_analysis(handle_two, "binary-2")?;
@@ -518,6 +521,11 @@ fn main() -> Result<()> {
         cli.include_unique_functions,
         cli.include_identical_functions,
     );
+    if cli.stdio {
+        dump_comparisons(io::stdout(), &comparisons, cli.diff_mode)?;
+        return Ok(());
+    }
+
     let prepared = prepare_comparisons(comparisons)?;
     run_tui(
         prepared,
@@ -802,6 +810,7 @@ fn parse_instruction_mnemonic(instruction_text: &str) -> Option<String> {
 fn render_progress(
     progress_rx: &mpsc::Receiver<ProgressEvent>,
     states: &mut HashMap<String, ProgressState>,
+    use_stderr: bool,
 ) -> Result<()> {
     while let Ok(event) = progress_rx.recv_timeout(Duration::from_millis(100)) {
         match event {
@@ -828,19 +837,26 @@ fn render_progress(
             }
         }
 
-        print_progress(states)?;
+        print_progress(states, use_stderr)?;
     }
 
     if !states.is_empty() {
-        print_progress(states)?;
-        println!();
+        print_progress(states, use_stderr)?;
+        if use_stderr {
+            eprintln!();
+        } else {
+            println!();
+        }
     }
 
     Ok(())
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn print_progress(states: &HashMap<String, ProgressState>) -> Result<()> {
+fn print_progress(
+    states: &HashMap<String, ProgressState>,
+    use_stderr: bool,
+) -> Result<()> {
     let mut labels = states.keys().collect::<Vec<_>>();
     labels.sort_unstable();
 
@@ -866,10 +882,17 @@ fn print_progress(states: &HashMap<String, ProgressState>) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" | ");
 
-    print!("\r{line}");
-    io::stdout()
-        .flush()
-        .context("failed to flush progress output")
+    if use_stderr {
+        eprint!("\r{line}");
+        io::stderr()
+            .flush()
+            .context("failed to flush progress output")
+    } else {
+        print!("\r{line}");
+        io::stdout()
+            .flush()
+            .context("failed to flush progress output")
+    }
 }
 
 fn build_comparisons(
@@ -1057,6 +1080,96 @@ fn sort_comparisons(items: &mut [PreparedComparison], diff_mode: DiffMode) {
             .unwrap_or(Ordering::Equal)
             .then_with(|| left.comparison.name.cmp(&right.comparison.name))
     });
+}
+
+fn sort_function_comparisons(
+    items: &mut [FunctionComparison],
+    diff_mode: DiffMode,
+) {
+    items.sort_by(|left, right| {
+        let left_score = diff_mode.score(left);
+        let right_score = diff_mode.score(right);
+
+        left_score
+            .partial_cmp(&right_score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+}
+
+fn dump_comparisons(
+    mut writer: impl Write,
+    comparisons: &[FunctionComparison],
+    diff_mode: DiffMode,
+) -> Result<()> {
+    let mut sorted = comparisons.to_vec();
+    sort_function_comparisons(&mut sorted, diff_mode);
+
+    let show_presence_columns = sorted
+        .iter()
+        .any(|comparison| !comparison.is_present_in_both());
+    let function_width = sorted
+        .iter()
+        .map(|comparison| comparison.name.len())
+        .max()
+        .unwrap_or("Function".len())
+        .max("Function".len());
+
+    if show_presence_columns {
+        writeln!(
+            writer,
+            "{:<function_width$}  {:>8}  {:>8}  {:>8}  {:>8}  {:>4}  {:>4}",
+            "Function",
+            diff_mode.label(),
+            "combined",
+            "count",
+            "ops",
+            "Bin1",
+            "Bin2",
+        )?;
+    } else {
+        writeln!(
+            writer,
+            "{:<function_width$}  {:>8}  {:>8}  {:>8}  {:>8}",
+            "Function",
+            diff_mode.label(),
+            "combined",
+            "count",
+            "ops",
+        )?;
+    }
+
+    for comparison in sorted {
+        if show_presence_columns {
+            writeln!(
+                writer,
+                "{:<function_width$}  {:>8.3}  {:>8.3}  {:>8.3}  {:>8.3}  {:>4}  {:>4}",
+                comparison.name,
+                diff_mode.score(&comparison),
+                comparison.combined_score,
+                comparison.count_score,
+                comparison.order_score,
+                yes_or_no(comparison.function1.is_some()),
+                yes_or_no(comparison.function2.is_some()),
+            )?;
+        } else {
+            writeln!(
+                writer,
+                "{:<function_width$}  {:>8.3}  {:>8.3}  {:>8.3}  {:>8.3}",
+                comparison.name,
+                diff_mode.score(&comparison),
+                comparison.combined_score,
+                comparison.count_score,
+                comparison.order_score,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+const fn yes_or_no(present: bool) -> &'static str {
+    if present { "yes" } else { "no" }
 }
 
 fn run_tui(
@@ -1451,8 +1564,8 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 mod tests {
     use super::{
         App, DiffMode, FunctionComparison, FunctionDisassembly,
-        PreparedComparison, build_objdump_command, lcs_len, order_similarity,
-        parse_function_header, parse_instruction_mnemonic,
+        PreparedComparison, build_objdump_command, dump_comparisons, lcs_len,
+        order_similarity, parse_function_header, parse_instruction_mnemonic,
         parse_instruction_text, weighted_jaccard, write_temp_disassembly,
     };
     use std::ffi::OsString;
@@ -1737,11 +1850,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dumps_sorted_stdio_table() {
+        let comparisons = vec![
+            comparison_for_stdio("beta", 0.4, 0.6, 0.2, true, true),
+            comparison_for_stdio("alpha", 0.1, 0.3, 0.0, true, false),
+        ];
+        let mut output = Vec::new();
+
+        dump_comparisons(&mut output, &comparisons, DiffMode::Combined)
+            .expect("failed to dump table");
+
+        let rendered = String::from_utf8(output).expect("expected utf-8");
+        let mut lines = rendered.lines();
+        let header = lines.next().expect("missing header");
+        let first = lines.next().expect("missing first row");
+        let second = lines.next().expect("missing second row");
+
+        assert!(header.contains("Function"));
+        assert!(header.contains("combined"));
+        assert!(header.contains("count"));
+        assert!(header.contains("ops"));
+        assert!(header.contains("Bin1"));
+        assert!(header.contains("Bin2"));
+        assert!(first.starts_with("alpha"));
+        assert!(first.ends_with(" yes    no"));
+        assert!(second.starts_with("beta"));
+        assert!(second.ends_with(" yes   yes"));
+    }
+
     fn visible_names(app: &App) -> Vec<String> {
         app.filtered_indices
             .iter()
             .map(|index| app.items[*index].comparison.name.clone())
             .collect()
+    }
+
+    fn comparison_for_stdio(
+        name: &str,
+        combined_score: f64,
+        count_score: f64,
+        order_score: f64,
+        present_in_binary1: bool,
+        present_in_binary2: bool,
+    ) -> FunctionComparison {
+        FunctionComparison {
+            name: name.to_owned(),
+            function1: present_in_binary1.then(synthetic_function),
+            function2: present_in_binary2.then(synthetic_function),
+            combined_score,
+            count_score,
+            order_score,
+        }
+    }
+
+    fn synthetic_function() -> FunctionDisassembly {
+        FunctionDisassembly {
+            instructions: vec!["mov".to_owned()],
+            normalized_instructions: vec!["mov".to_owned()],
+            rendered: "mov\n".to_owned(),
+        }
     }
 
     fn prepared_comparison(

@@ -36,6 +36,8 @@ cleverness or unnecessary abstraction.
 ## Style and Conventions
 
 - Follow idiomatic Rust and the Rust API Guidelines.
+- Prefer small, self-contained modules with clear responsibilities over putting
+  most functionality into one large `src/main.rs`.
 - Use descriptive names for functions, types, modules, and variables.
 - Use `snake_case` for functions, variables, and modules.
 - Use `PascalCase` for types and traits.
@@ -48,6 +50,11 @@ cleverness or unnecessary abstraction.
 ## API and Type Design
 
 - Use the type system to prevent invalid states where practical.
+- Lean on Rust's strengths: use structs, traits, and generics where they improve
+  clarity, correctness, and reuse.
+- Use generics judiciously to avoid unnecessary code bloat.
+- Prefer static dispatch by default; use dynamic dispatch only when runtime
+  polymorphism is actually required.
 - Prefer newtypes over primitive aliases when values have distinct semantics.
 - Prefer `Option<T>` over sentinel values.
 - Make struct fields private by default unless public fields improve the API.
