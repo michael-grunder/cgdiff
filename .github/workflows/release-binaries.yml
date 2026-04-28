@@ -54,7 +54,7 @@ jobs:
         if: matrix.platform == 'linux-musl'
         run: |
           file "target/${{ matrix.target }}/release/${BINARY_NAME}" | tee binary-file.txt
-          grep -q "statically linked" binary-file.txt
+          grep -Eq "(static-pie|statically) linked" binary-file.txt
 
       - name: Verify macOS binary
         if: matrix.platform == 'macos'

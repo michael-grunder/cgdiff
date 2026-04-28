@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -60,6 +61,8 @@ pub(crate) fn render_progress(
     states: &mut HashMap<String, ProgressState>,
     use_stderr: bool,
 ) -> Result<()> {
+    let mut printed_line_count = 0;
+
     while let Ok(event) = progress_rx.recv_timeout(Duration::from_millis(100)) {
         match event {
             ProgressEvent::Started { label, total_bytes } => {
@@ -85,11 +88,12 @@ pub(crate) fn render_progress(
             }
         }
 
-        print_progress(states, use_stderr)?;
+        printed_line_count =
+            print_progress(states, use_stderr, printed_line_count)?;
     }
 
     if !states.is_empty() {
-        print_progress(states, use_stderr)?;
+        print_progress(states, use_stderr, printed_line_count)?;
         if use_stderr {
             eprintln!();
         } else {
@@ -101,14 +105,11 @@ pub(crate) fn render_progress(
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn print_progress(
-    states: &HashMap<String, ProgressState>,
-    use_stderr: bool,
-) -> Result<()> {
+fn progress_lines(states: &HashMap<String, ProgressState>) -> Vec<String> {
     let mut labels = states.keys().collect::<Vec<_>>();
     labels.sort_unstable();
 
-    let line = labels
+    labels
         .into_iter()
         .filter_map(|label| {
             states.get(label).map(|state| {
@@ -128,17 +129,96 @@ fn print_progress(
             })
         })
         .collect::<Vec<_>>()
-        .join(" | ");
+}
+
+fn print_progress(
+    states: &HashMap<String, ProgressState>,
+    use_stderr: bool,
+    previous_line_count: usize,
+) -> Result<usize> {
+    let lines = progress_lines(states);
+    let rendered = render_progress_lines(&lines, previous_line_count);
 
     if use_stderr {
-        eprint!("\r{line}");
+        eprint!("{rendered}");
         io::stderr()
             .flush()
-            .context("failed to flush progress output")
+            .context("failed to flush progress output")?;
     } else {
-        print!("\r{line}");
+        print!("{rendered}");
         io::stdout()
             .flush()
-            .context("failed to flush progress output")
+            .context("failed to flush progress output")?;
+    }
+
+    Ok(lines.len())
+}
+
+fn render_progress_lines(
+    lines: &[String],
+    previous_line_count: usize,
+) -> String {
+    let mut output = String::new();
+    if previous_line_count > 1 {
+        write!(output, "\x1b[{}A", previous_line_count - 1)
+            .expect("writing to a string must not fail");
+    }
+
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+        output.push_str("\r\x1b[2K");
+        output.push_str(line);
+    }
+
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_lines_render_each_binary_on_its_own_line() {
+        let states = HashMap::from([
+            (
+                "B /tmp/relay/ab/new.so".to_owned(),
+                ProgressState {
+                    total_bytes: 6_275_368,
+                    processed_bytes: 6_275_368,
+                    completed: true,
+                },
+            ),
+            (
+                "A /tmp/relay/ab/old.so".to_owned(),
+                ProgressState {
+                    total_bytes: 6_276_264,
+                    processed_bytes: 6_276_264,
+                    completed: true,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            progress_lines(&states),
+            vec![
+                "A /tmp/relay/ab/old.so: 6276264/6276264 bytes 100.0% done",
+                "B /tmp/relay/ab/new.so: 6275368/6275368 bytes 100.0% done",
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_progress_output_rewinds_to_the_first_status_line() {
+        let lines = vec![
+            "A old:       1/10 bytes  10.0%".to_owned(),
+            "B new:       2/20 bytes  10.0%".to_owned(),
+        ];
+
+        assert_eq!(
+            render_progress_lines(&lines, 2),
+            "\x1b[1A\r\x1b[2KA old:       1/10 bytes  10.0%\n\r\x1b[2KB new:       2/20 bytes  10.0%"
+        );
     }
 }

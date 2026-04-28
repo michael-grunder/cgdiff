@@ -37,15 +37,22 @@ fn main() -> Result<()> {
     let (progress_tx, progress_rx) = mpsc::channel();
     let binary1 = cli.binary1.clone();
     let binary2 = cli.binary2.clone();
+    let binary_one_label = format!("A {}", cli.binary1.display());
+    let binary_two_label = format!("B {}", cli.binary2.display());
     let objdump_one = objdump.clone();
     let progress_tx_one = progress_tx.clone();
     let progress_tx_two = progress_tx.clone();
 
     let handle_one = thread::spawn(move || {
-        analyze_binary(&objdump_one, &binary1, "binary-1", &progress_tx_one)
+        analyze_binary(
+            &objdump_one,
+            &binary1,
+            &binary_one_label,
+            &progress_tx_one,
+        )
     });
     let handle_two = thread::spawn(move || {
-        analyze_binary(&objdump, &binary2, "binary-2", &progress_tx_two)
+        analyze_binary(&objdump, &binary2, &binary_two_label, &progress_tx_two)
     });
     drop(progress_tx);
 
