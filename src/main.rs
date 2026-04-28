@@ -370,10 +370,21 @@ fn build_objdump_command(objdump: &Path, binary_path: &Path) -> Command {
     command
         .arg("--disassemble")
         .arg("--demangle")
+        .arg("--no-show-raw-insn")
+        .args(x86_intel_syntax_args(objdump))
         .arg(binary_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
+}
+
+fn x86_intel_syntax_args(objdump: &Path) -> &'static [&'static str] {
+    match objdump.file_name().and_then(|name| name.to_str()) {
+        Some(name) if name.starts_with("llvm-objdump") => {
+            &["--x86-asm-syntax=intel"]
+        }
+        _ => &["-Mintel"],
+    }
 }
 
 fn spawn_stderr_reader(
@@ -1129,10 +1140,12 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FunctionComparison, FunctionDisassembly, lcs_len, order_similarity,
-        parse_function_header, parse_instruction_mnemonic,
-        parse_instruction_text, weighted_jaccard,
+        FunctionComparison, FunctionDisassembly, build_objdump_command,
+        lcs_len, order_similarity, parse_function_header,
+        parse_instruction_mnemonic, parse_instruction_text, weighted_jaccard,
     };
+    use std::ffi::OsString;
+    use std::path::Path;
 
     #[test]
     fn parses_function_headers() {
@@ -1150,6 +1163,53 @@ mod tests {
         let mnemonic = parse_instruction_mnemonic(&instruction)
             .expect("expected mnemonic");
         assert_eq!(mnemonic, "mov");
+    }
+
+    #[test]
+    fn parses_instruction_text_without_raw_bytes() {
+        let instruction = parse_instruction_text("113d:\tmov    rsp, rbp")
+            .expect("expected instruction");
+        assert_eq!(instruction, "mov    rsp, rbp");
+    }
+
+    #[test]
+    fn builds_gnu_objdump_command_with_intel_syntax() {
+        let command =
+            build_objdump_command(Path::new("objdump"), Path::new("binary"));
+        let args: Vec<OsString> =
+            command.get_args().map(OsString::from).collect();
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--disassemble"),
+                OsString::from("--demangle"),
+                OsString::from("--no-show-raw-insn"),
+                OsString::from("-Mintel"),
+                OsString::from("binary"),
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_llvm_objdump_command_with_intel_syntax() {
+        let command = build_objdump_command(
+            Path::new("llvm-objdump"),
+            Path::new("binary"),
+        );
+        let args: Vec<OsString> =
+            command.get_args().map(OsString::from).collect();
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--disassemble"),
+                OsString::from("--demangle"),
+                OsString::from("--no-show-raw-insn"),
+                OsString::from("--x86-asm-syntax=intel"),
+                OsString::from("binary"),
+            ]
+        );
     }
 
     #[test]
