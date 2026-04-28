@@ -2667,6 +2667,6 @@ mod tests {
         let path = temp_path.display().to_string();
 
         assert!(path.contains("cgdiff-LEFT-foo.so-"));
-        assert!(path.ends_with(".s"));
+        assert_eq!(temp_path.extension(), Some(std::ffi::OsStr::new("s")));
     }
 }
