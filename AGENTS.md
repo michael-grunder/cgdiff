@@ -86,6 +86,8 @@ cleverness or unnecessary abstraction.
 
 ## Documentation
 
+- Create or update `README.md` with an overview of the project and example usage.
+- Create or maintain `CHANGELOG.md`. It should be structured in the way `keep a changelog` recommends, with sections for each version and clear descriptions of changes.
 - Add doc comments for public types, functions, traits, and methods.
 - Document important invariants, panics, and error cases.
 - Include examples for public APIs when behavior is non-obvious.
