@@ -150,14 +150,23 @@ enum Overlay {
 }
 
 #[derive(Debug)]
+struct SearchState {
+    buffer: String,
+    previous_query: String,
+}
+
+#[derive(Debug)]
 struct App {
     items: Vec<PreparedComparison>,
+    filtered_indices: Vec<usize>,
     diff_mode: DiffMode,
     table_state: TableState,
     should_quit: bool,
     overlay: Option<Overlay>,
     include_unique_functions: bool,
     include_identical_functions: bool,
+    search_query: String,
+    search_state: Option<SearchState>,
 }
 
 impl App {
@@ -169,57 +178,62 @@ impl App {
     ) -> Self {
         sort_comparisons(&mut items, diff_mode);
         let mut table_state = TableState::default();
-        if !items.is_empty() {
+        let filtered_indices = (0..items.len()).collect::<Vec<_>>();
+        if !filtered_indices.is_empty() {
             table_state.select(Some(0));
         }
 
         Self {
             items,
+            filtered_indices,
             diff_mode,
             table_state,
             should_quit: false,
             overlay: None,
             include_unique_functions,
             include_identical_functions,
+            search_query: String::new(),
+            search_state: None,
         }
     }
 
     fn selected(&self) -> Option<&PreparedComparison> {
         self.table_state
             .selected()
-            .and_then(|index| self.items.get(index))
+            .and_then(|index| self.filtered_indices.get(index))
+            .and_then(|index| self.items.get(*index))
     }
 
     fn next(&mut self) {
-        if self.items.is_empty() {
+        if self.filtered_indices.is_empty() {
             return;
         }
 
         let next_index = match self.table_state.selected() {
-            Some(index) if index + 1 < self.items.len() => index + 1,
+            Some(index) if index + 1 < self.filtered_indices.len() => index + 1,
             _ => 0,
         };
         self.table_state.select(Some(next_index));
     }
 
     fn previous(&mut self) {
-        if self.items.is_empty() {
+        if self.filtered_indices.is_empty() {
             return;
         }
 
         let previous_index = match self.table_state.selected() {
-            Some(0) | None => self.items.len() - 1,
+            Some(0) | None => self.filtered_indices.len() - 1,
             Some(index) => index - 1,
         };
         self.table_state.select(Some(previous_index));
     }
 
     fn resort(&mut self, diff_mode: DiffMode) {
+        let selected_name =
+            self.selected().map(|item| item.comparison.name.clone());
         self.diff_mode = diff_mode;
         sort_comparisons(&mut self.items, diff_mode);
-        if !self.items.is_empty() && self.table_state.selected().is_none() {
-            self.table_state.select(Some(0));
-        }
+        self.rebuild_filter(selected_name.as_deref());
     }
 
     fn toggle_details(&mut self) {
@@ -245,6 +259,93 @@ impl App {
         } else {
             false
         }
+    }
+
+    fn start_search(&mut self) {
+        self.search_state = Some(SearchState {
+            buffer: self.search_query.clone(),
+            previous_query: self.search_query.clone(),
+        });
+    }
+
+    fn search_buffer_mut(&mut self) -> Option<&mut String> {
+        self.search_state.as_mut().map(|state| &mut state.buffer)
+    }
+
+    fn append_search_char(&mut self, character: char) {
+        if let Some(buffer) = self.search_buffer_mut() {
+            buffer.push(character);
+            self.apply_search_buffer();
+        }
+    }
+
+    fn pop_search_char(&mut self) {
+        if let Some(buffer) = self.search_buffer_mut() {
+            buffer.pop();
+            self.apply_search_buffer();
+        }
+    }
+
+    fn apply_search_buffer(&mut self) {
+        let selected_name =
+            self.selected().map(|item| item.comparison.name.clone());
+        if let Some(state) = &self.search_state {
+            self.search_query = state.buffer.clone();
+        }
+        self.rebuild_filter(selected_name.as_deref());
+    }
+
+    fn confirm_search(&mut self) {
+        self.search_state = None;
+    }
+
+    fn cancel_search(&mut self) {
+        if let Some(state) = self.search_state.take() {
+            self.search_query = state.previous_query;
+            self.rebuild_filter(None);
+        }
+    }
+
+    const fn is_searching(&self) -> bool {
+        self.search_state.is_some()
+    }
+
+    fn search_prompt(&self) -> String {
+        self.search_state.as_ref().map_or_else(
+            || self.search_query.clone(),
+            |state| state.buffer.clone(),
+        )
+    }
+
+    const fn visible_count(&self) -> usize {
+        self.filtered_indices.len()
+    }
+
+    fn rebuild_filter(&mut self, selected_name: Option<&str>) {
+        let query = self.search_query.to_ascii_lowercase();
+        self.filtered_indices = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                query.is_empty()
+                    || item
+                        .comparison
+                        .name
+                        .to_ascii_lowercase()
+                        .contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        let selected_index = selected_name.and_then(|name| {
+            self.filtered_indices
+                .iter()
+                .position(|index| self.items[*index].comparison.name == name)
+        });
+
+        let fallback_index = (!self.filtered_indices.is_empty()).then_some(0);
+        self.table_state.select(selected_index.or(fallback_index));
     }
 }
 
@@ -847,30 +948,45 @@ fn run_tui(
         {
             match event::read().context("failed reading terminal event")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    match key.code {
-                        KeyCode::Esc if !app.close_overlay() => {
-                            app.should_quit = true;
-                        }
-                        KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Down | KeyCode::Char('j') => app.next(),
-                        KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                        KeyCode::Char('1') => app.resort(DiffMode::Combined),
-                        KeyCode::Char('2') => app.resort(DiffMode::Count),
-                        KeyCode::Char('3') => app.resort(DiffMode::Order),
-                        KeyCode::Char('i' | 'I') => {
-                            app.toggle_details();
-                        }
-                        KeyCode::Char('?') => app.toggle_help(),
-                        KeyCode::Enter => {
-                            if let Some(selection) = app.selected() {
-                                restore_terminal(&mut terminal)?;
-                                let launch_result =
-                                    launch_editor(editor, selection);
-                                terminal = setup_terminal()?;
-                                launch_result?;
+                    if app.is_searching() {
+                        match key.code {
+                            KeyCode::Esc => app.cancel_search(),
+                            KeyCode::Enter => app.confirm_search(),
+                            KeyCode::Backspace => app.pop_search_char(),
+                            KeyCode::Char(character) => {
+                                app.append_search_char(character);
                             }
+                            _ => {}
                         }
-                        _ => {}
+                    } else {
+                        match key.code {
+                            KeyCode::Esc if !app.close_overlay() => {
+                                app.should_quit = true;
+                            }
+                            KeyCode::Char('q') => app.should_quit = true,
+                            KeyCode::Down | KeyCode::Char('j') => app.next(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                            KeyCode::Char('1') => {
+                                app.resort(DiffMode::Combined);
+                            }
+                            KeyCode::Char('2') => app.resort(DiffMode::Count),
+                            KeyCode::Char('3') => app.resort(DiffMode::Order),
+                            KeyCode::Char('i' | 'I') => {
+                                app.toggle_details();
+                            }
+                            KeyCode::Char('/') => app.start_search(),
+                            KeyCode::Char('?') => app.toggle_help(),
+                            KeyCode::Enter => {
+                                if let Some(selection) = app.selected() {
+                                    restore_terminal(&mut terminal)?;
+                                    let launch_result =
+                                        launch_editor(editor, selection);
+                                    terminal = setup_terminal()?;
+                                    launch_result?;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
@@ -952,8 +1068,21 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     "hidden"
                 }
             )),
+            Span::raw("  "),
+            Span::raw(format!(
+                "filter: {}",
+                if app.search_query.is_empty() {
+                    "(none)"
+                } else {
+                    app.search_query.as_str()
+                }
+            )),
         ]),
-        Line::from(format!("selected: {selected}")),
+        Line::from(format!(
+            "selected: {selected}  visible: {}/{}",
+            app.visible_count(),
+            app.items.len()
+        )),
     ])
     .block(Block::default().title("Summary").borders(Borders::ALL));
 
@@ -967,7 +1096,8 @@ fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
 fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     let show_presence_columns = app.include_unique_functions;
     let table = if show_presence_columns {
-        let rows = app.items.iter().map(|item| {
+        let rows = app.filtered_indices.iter().map(|index| {
+            let item = &app.items[*index];
             Row::new([
                 Cell::from(item.comparison.name.clone()),
                 Cell::from(format!(
@@ -1003,7 +1133,8 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
                 ),
         )
     } else {
-        let rows = app.items.iter().map(|item| {
+        let rows = app.filtered_indices.iter().map(|index| {
+            let item = &app.items[*index];
             Row::new([
                 Cell::from(item.comparison.name.clone()),
                 Cell::from(format!(
@@ -1090,11 +1221,20 @@ fn draw_details_popup(
 }
 
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let footer = Paragraph::new(format!(
-        "j/k or arrows move  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
-        app.items.len()
-    ))
-    .block(Block::default().borders(Borders::ALL));
+    let footer_text = if app.is_searching() {
+        format!(
+            "/{}  Enter apply  Esc cancel  Backspace delete  matches: {}",
+            app.search_prompt(),
+            app.visible_count()
+        )
+    } else {
+        format!(
+            "j/k or arrows move  / filter  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
+            app.items.len()
+        )
+    };
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
@@ -1105,6 +1245,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("q / Esc: quit"),
         Line::from("j / Down: next function"),
         Line::from("k / Up: previous function"),
+        Line::from("/: filter functions by substring"),
         Line::from("1: sort by combined score"),
         Line::from("2: sort by count score"),
         Line::from("3: sort by ops score"),
@@ -1166,9 +1307,10 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FunctionComparison, FunctionDisassembly, build_objdump_command,
-        lcs_len, order_similarity, parse_function_header,
-        parse_instruction_mnemonic, parse_instruction_text, weighted_jaccard,
+        App, DiffMode, FunctionComparison, FunctionDisassembly,
+        PreparedComparison, build_objdump_command, lcs_len, order_similarity,
+        parse_function_header, parse_instruction_mnemonic,
+        parse_instruction_text, weighted_jaccard, write_temp_disassembly,
     };
     use std::ffi::OsString;
     use std::path::Path;
@@ -1338,5 +1480,103 @@ mod tests {
 
         assert!(left.is_identical());
         assert!(!right.is_identical());
+    }
+
+    #[test]
+    fn filters_visible_items_case_insensitively() {
+        let mut app = App::new(
+            vec![
+                prepared_comparison("AlphaRelay", 0.1),
+                prepared_comparison("beta", 0.2),
+                prepared_comparison("relay_worker", 0.3),
+            ],
+            DiffMode::Combined,
+            false,
+            false,
+        );
+
+        app.start_search();
+        for character in "ReLaY".chars() {
+            app.append_search_char(character);
+        }
+        app.confirm_search();
+
+        assert_eq!(app.visible_count(), 2);
+        assert_eq!(
+            visible_names(&app),
+            vec!["AlphaRelay".to_owned(), "relay_worker".to_owned()]
+        );
+        assert_eq!(
+            app.selected().map(|item| item.comparison.name.as_str()),
+            Some("AlphaRelay")
+        );
+    }
+
+    #[test]
+    fn cancel_search_restores_previous_filter() {
+        let mut app = App::new(
+            vec![
+                prepared_comparison("relay_a", 0.1),
+                prepared_comparison("relay_b", 0.2),
+                prepared_comparison("other", 0.3),
+            ],
+            DiffMode::Combined,
+            false,
+            false,
+        );
+
+        app.start_search();
+        for character in "relay".chars() {
+            app.append_search_char(character);
+        }
+        app.confirm_search();
+
+        app.start_search();
+        app.append_search_char('z');
+        assert_eq!(app.visible_count(), 0);
+
+        app.cancel_search();
+
+        assert_eq!(app.search_query, "relay");
+        assert_eq!(app.visible_count(), 2);
+        assert_eq!(
+            visible_names(&app),
+            vec!["relay_a".to_owned(), "relay_b".to_owned()]
+        );
+    }
+
+    fn visible_names(app: &App) -> Vec<String> {
+        app.filtered_indices
+            .iter()
+            .map(|index| app.items[*index].comparison.name.clone())
+            .collect()
+    }
+
+    fn prepared_comparison(
+        name: &str,
+        combined_score: f64,
+    ) -> PreparedComparison {
+        PreparedComparison {
+            comparison: FunctionComparison {
+                name: name.to_owned(),
+                function1: Some(FunctionDisassembly {
+                    instructions: vec!["mov".to_owned()],
+                    normalized_instructions: vec!["mov".to_owned()],
+                    rendered: format!("{name}\n"),
+                }),
+                function2: Some(FunctionDisassembly {
+                    instructions: vec!["mov".to_owned()],
+                    normalized_instructions: vec!["mov".to_owned()],
+                    rendered: format!("{name}\n"),
+                }),
+                combined_score,
+                count_score: combined_score,
+                order_score: combined_score,
+            },
+            diff1_path: write_temp_disassembly(&format!("{name}-left\n"))
+                .expect("failed to create left temp file"),
+            diff2_path: write_temp_disassembly(&format!("{name}-right\n"))
+                .expect("failed to create right temp file"),
+        }
     }
 }
