@@ -30,7 +30,7 @@ use ratatui::widgets::{
 };
 use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
-use tempfile::{NamedTempFile, TempPath};
+use tempfile::{Builder, TempPath};
 
 const VERSION: &str = concat!(
     env!("CARGO_PKG_NAME"),
@@ -545,7 +545,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let prepared = prepare_comparisons(comparisons)?;
+    let prepared =
+        prepare_comparisons(comparisons, &cli.binary1, &cli.binary2)?;
     run_tui(
         prepared,
         cli.diff_mode,
@@ -1060,7 +1061,11 @@ fn lcs_len(left: &[String], right: &[String]) -> usize {
 
 fn prepare_comparisons(
     comparisons: Vec<FunctionComparison>,
+    binary1: &Path,
+    binary2: &Path,
 ) -> Result<Vec<PreparedComparison>> {
+    let [label1, label2] = temp_file_labels(binary1, binary2);
+
     comparisons
         .into_iter()
         .map(|comparison| {
@@ -1068,12 +1073,12 @@ fn prepare_comparisons(
                 || format!("missing function: {}\n", comparison.name),
                 |function| function.rendered.clone(),
             );
-            let diff1_path = write_temp_disassembly(&diff1_contents)?;
+            let diff1_path = write_temp_disassembly(&diff1_contents, &label1)?;
             let diff2_contents = comparison.function2.as_ref().map_or_else(
                 || format!("missing function: {}\n", comparison.name),
                 |function| function.rendered.clone(),
             );
-            let diff2_path = write_temp_disassembly(&diff2_contents)?;
+            let diff2_path = write_temp_disassembly(&diff2_contents, &label2)?;
 
             Ok(PreparedComparison {
                 comparison,
@@ -1084,8 +1089,28 @@ fn prepare_comparisons(
         .collect()
 }
 
-fn write_temp_disassembly(contents: &str) -> Result<TempPath> {
-    let mut file = NamedTempFile::new()
+fn temp_file_labels(binary1: &Path, binary2: &Path) -> [String; 2] {
+    let basename1 = binary1.file_name().map_or_else(
+        || "binary1".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let basename2 = binary2.file_name().map_or_else(
+        || "binary2".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+
+    if basename1 == basename2 {
+        [format!("LEFT-{basename1}"), format!("RIGHT-{basename2}")]
+    } else {
+        [basename1, basename2]
+    }
+}
+
+fn write_temp_disassembly(contents: &str, label: &str) -> Result<TempPath> {
+    let prefix = format!("cgdiff-{label}-");
+    let mut file = Builder::new()
+        .prefix(&prefix)
+        .tempfile()
         .context("failed to create temp disassembly file")?;
     file.write_all(contents.as_bytes())
         .context("failed to write temp disassembly file")?;
@@ -1591,7 +1616,8 @@ mod tests {
         PreparedComparison, SearchFilter, build_comparisons,
         build_objdump_command, dump_comparisons, lcs_len, order_similarity,
         parse_function_header, parse_instruction_mnemonic,
-        parse_instruction_text, weighted_jaccard, write_temp_disassembly,
+        parse_instruction_text, temp_file_labels, weighted_jaccard,
+        write_temp_disassembly,
     };
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -2021,10 +2047,48 @@ mod tests {
                 count_score: combined_score,
                 order_score: combined_score,
             },
-            diff1_path: write_temp_disassembly(&format!("{name}-left\n"))
-                .expect("failed to create left temp file"),
-            diff2_path: write_temp_disassembly(&format!("{name}-right\n"))
-                .expect("failed to create right temp file"),
+            diff1_path: write_temp_disassembly(
+                &format!("{name}-left\n"),
+                "left",
+            )
+            .expect("failed to create left temp file"),
+            diff2_path: write_temp_disassembly(
+                &format!("{name}-right\n"),
+                "right",
+            )
+            .expect("failed to create right temp file"),
         }
+    }
+
+    #[test]
+    fn temp_labels_use_distinct_basenames_when_available() {
+        let labels = temp_file_labels(
+            Path::new("/tmp/old.so"),
+            Path::new("/tmp/new.so"),
+        );
+
+        assert_eq!(labels, ["old.so".to_owned(), "new.so".to_owned()]);
+    }
+
+    #[test]
+    fn temp_labels_add_side_markers_when_basenames_match() {
+        let labels = temp_file_labels(
+            Path::new("/tmp/old/foo.so"),
+            Path::new("/tmp/new/foo.so"),
+        );
+
+        assert_eq!(
+            labels,
+            ["LEFT-foo.so".to_owned(), "RIGHT-foo.so".to_owned()]
+        );
+    }
+
+    #[test]
+    fn temp_disassembly_path_includes_label_prefix() {
+        let temp_path =
+            write_temp_disassembly("mov\n", "LEFT-foo.so").expect("temp file");
+        let path = temp_path.display().to_string();
+
+        assert!(path.contains("cgdiff-LEFT-foo.so-"));
     }
 }
