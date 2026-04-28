@@ -1,13 +1,13 @@
 #![warn(clippy::all, clippy::nursery, clippy::pedantic)]
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{LazyLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -46,6 +46,19 @@ const DEFAULT_EDITOR: &str = "nvim -d {file1} {file2}";
 const ORDER_WEIGHT: f64 = 0.70;
 const EDITOR_FILE1_PLACEHOLDER: &str = "{file1}";
 const EDITOR_FILE2_PLACEHOLDER: &str = "{file2}";
+
+static SYMBOL_TARGET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?P<addr>0x[0-9a-fA-F]+|[0-9a-fA-F]+)\s+<(?P<sym>[^>]+)>")
+        .expect("symbol target regex must compile")
+});
+static RIP_DATA_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"#\s*(?P<addr>0x[0-9a-fA-F]+|[0-9a-fA-F]+)\s+<(?P<sym>[^>]+)>")
+        .expect("RIP data comment regex must compile")
+});
+static RIP_RELATIVE_OPERAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\s*rip\s*[+-]\s*(?:0x[0-9a-fA-F]+|[0-9a-fA-F]+)\s*\]")
+        .expect("RIP-relative operand regex must compile")
+});
 
 #[derive(Clone, Debug, Parser)]
 #[command(version = VERSION, about = "Compare codegen between two binaries")]
@@ -119,6 +132,27 @@ struct FunctionDisassembly {
     instructions: Vec<String>,
     normalized_instructions: Vec<String>,
     rendered: String,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedInstruction {
+    original_line: String,
+    address: Option<u64>,
+    text: String,
+}
+
+#[derive(Debug)]
+struct FunctionBuilder {
+    name: String,
+    header_line: String,
+    lines: Vec<String>,
+    instructions: Vec<ParsedInstruction>,
+}
+
+#[derive(Debug)]
+struct NormalizedInstruction {
+    text: String,
+    local_target: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -677,10 +711,7 @@ fn parse_objdump_output(
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     let mut functions = HashMap::new();
-    let mut current_name: Option<String> = None;
-    let mut current_lines = Vec::new();
-    let mut current_instructions = Vec::new();
-    let mut current_normalized_instructions = Vec::new();
+    let mut current_function: Option<FunctionBuilder> = None;
     let mut processed_bytes = 0_u64;
 
     loop {
@@ -706,36 +737,25 @@ fn parse_objdump_output(
 
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if let Some(name) = parse_function_header(trimmed) {
-            flush_current_function(
-                &mut functions,
-                &mut current_name,
-                &mut current_lines,
-                &mut current_instructions,
-                &mut current_normalized_instructions,
-            );
-            current_name = Some(name);
-            current_lines.push(trimmed.to_owned());
+            flush_current_function(&mut functions, &mut current_function);
+            current_function = Some(FunctionBuilder {
+                name,
+                header_line: trimmed.to_owned(),
+                lines: vec![trimmed.to_owned()],
+                instructions: Vec::new(),
+            });
             continue;
         }
 
-        if current_name.is_some() {
-            if let Some(instruction) = parse_instruction_text(trimmed) {
-                current_normalized_instructions.push(instruction.clone());
-                let mnemonic = parse_instruction_mnemonic(&instruction)
-                    .expect("instruction text should contain a mnemonic");
-                current_instructions.push(mnemonic);
+        if let Some(function) = current_function.as_mut() {
+            function.lines.push(trimmed.to_owned());
+            if let Some(instruction) = parse_instruction_line(trimmed) {
+                function.instructions.push(instruction);
             }
-            current_lines.push(trimmed.to_owned());
         }
     }
 
-    flush_current_function(
-        &mut functions,
-        &mut current_name,
-        &mut current_lines,
-        &mut current_instructions,
-        &mut current_normalized_instructions,
-    );
+    flush_current_function(&mut functions, &mut current_function);
 
     Ok(functions)
 }
@@ -779,22 +799,92 @@ fn send_progress_finished(
 
 fn flush_current_function(
     functions: &mut HashMap<String, FunctionDisassembly>,
-    current_name: &mut Option<String>,
-    current_lines: &mut Vec<String>,
-    current_instructions: &mut Vec<String>,
-    current_normalized_instructions: &mut Vec<String>,
+    current_function: &mut Option<FunctionBuilder>,
 ) {
-    if let Some(name) = current_name.take() {
-        let rendered = current_lines.join("\n");
-        let disassembly = FunctionDisassembly {
-            instructions: std::mem::take(current_instructions),
-            normalized_instructions: std::mem::take(
-                current_normalized_instructions,
-            ),
-            rendered,
-        };
-        functions.insert(name, disassembly);
-        current_lines.clear();
+    if let Some(builder) = current_function.take() {
+        functions.insert(builder.name.clone(), finalize_function(&builder));
+    }
+}
+
+fn finalize_function(builder: &FunctionBuilder) -> FunctionDisassembly {
+    debug_assert_eq!(
+        parse_function_header(&builder.header_line).as_deref(),
+        Some(builder.name.as_str())
+    );
+
+    let local_labels = builder
+        .instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instruction)| {
+            instruction
+                .address
+                .map(|address| (address, format!(".L{index:04}")))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let normalized = builder
+        .instructions
+        .iter()
+        .map(|instruction| {
+            normalize_instruction_text(&instruction.text, &local_labels)
+        })
+        .collect::<Vec<_>>();
+
+    let target_addresses = normalized
+        .iter()
+        .filter_map(|instruction| instruction.local_target)
+        .collect::<HashSet<_>>();
+
+    let instructions = builder
+        .instructions
+        .iter()
+        .filter_map(|instruction| parse_instruction_mnemonic(&instruction.text))
+        .collect::<Vec<_>>();
+    let normalized_instructions = normalized
+        .iter()
+        .map(|instruction| instruction.text.clone())
+        .collect::<Vec<_>>();
+    let original_bytes = builder
+        .instructions
+        .iter()
+        .map(|instruction| instruction.original_line.len())
+        .sum::<usize>();
+    let mut rendered_lines = Vec::with_capacity(
+        builder.lines.len().max(builder.instructions.len() + 1),
+    );
+    rendered_lines.push(format!("<{}>:", builder.name));
+
+    for (instruction, normalized_instruction) in
+        builder.instructions.iter().zip(&normalized)
+    {
+        if let Some(address) = instruction.address
+            && target_addresses.contains(&address)
+            && let Some(label) = local_labels.get(&address)
+        {
+            rendered_lines.push(format!("{label}:"));
+        }
+        rendered_lines.push(format!("    {}", normalized_instruction.text));
+    }
+
+    let mut rendered = String::with_capacity(
+        original_bytes.max(
+            rendered_lines
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+                .saturating_add(rendered_lines.len()),
+        ),
+    );
+    rendered.push_str(&rendered_lines.join("\n"));
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+
+    FunctionDisassembly {
+        instructions,
+        normalized_instructions,
+        rendered,
     }
 }
 
@@ -809,17 +899,69 @@ fn parse_function_header(line: &str) -> Option<String> {
     Some(line[start + 1..line.len() - suffix.len()].to_owned())
 }
 
+#[cfg(test)]
 fn parse_instruction_text(line: &str) -> Option<String> {
+    parse_instruction_line(line).map(|instruction| instruction.text)
+}
+
+fn parse_instruction_line(line: &str) -> Option<ParsedInstruction> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() || trimmed.ends_with(':') {
         return None;
     }
 
-    let (_address, remainder) = trimmed.split_once(':')?;
-    remainder.rsplit('\t').find_map(|segment| {
-        let segment = segment.trim();
-        (!segment.is_empty()).then(|| segment.to_owned())
+    let (address_text, remainder) = trimmed.split_once(':')?;
+    let address = parse_hex_address(address_text)?;
+    let text = parse_instruction_remainder(remainder)?;
+
+    Some(ParsedInstruction {
+        original_line: line.to_owned(),
+        address: Some(address),
+        text,
     })
+}
+
+fn parse_instruction_remainder(remainder: &str) -> Option<String> {
+    let trimmed = remainder.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((first_column, rest)) = trimmed.split_once('\t')
+        && is_raw_byte_column(first_column)
+    {
+        let instruction = rest.trim();
+        return (!instruction.is_empty()).then(|| instruction.to_owned());
+    }
+
+    Some(trimmed.to_owned())
+}
+
+fn is_raw_byte_column(column: &str) -> bool {
+    let mut byte_count = 0;
+    for token in column.split_whitespace() {
+        if token.len() != 2
+            || !token.chars().all(|character| character.is_ascii_hexdigit())
+        {
+            return false;
+        }
+        byte_count += 1;
+    }
+
+    byte_count > 0
+}
+
+fn parse_hex_address(text: &str) -> Option<u64> {
+    let trimmed = text.trim();
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+
+    (!hex.is_empty()
+        && hex.chars().all(|character| character.is_ascii_hexdigit()))
+    .then(|| u64::from_str_radix(hex, 16).ok())
+    .flatten()
 }
 
 fn parse_instruction_mnemonic(instruction_text: &str) -> Option<String> {
@@ -827,6 +969,157 @@ fn parse_instruction_mnemonic(instruction_text: &str) -> Option<String> {
         .split_whitespace()
         .next()
         .map(str::to_owned)
+}
+
+fn normalize_instruction_text(
+    instruction_text: &str,
+    local_labels: &HashMap<u64, String>,
+) -> NormalizedInstruction {
+    let code = normalize_rip_data_reference(instruction_text);
+    let code = strip_comment(&code);
+    let Some((mnemonic, operands)) = split_mnemonic_operands(&code) else {
+        return NormalizedInstruction {
+            text: collapse_whitespace(&code),
+            local_target: None,
+        };
+    };
+
+    if !is_direct_control_flow_mnemonic(mnemonic) {
+        return NormalizedInstruction {
+            text: collapse_whitespace(&code),
+            local_target: None,
+        };
+    }
+
+    if let Some((address, symbol)) = parse_symbol_target(operands) {
+        if let Some(label) = local_labels.get(&address) {
+            return NormalizedInstruction {
+                text: format!("{mnemonic} {label}"),
+                local_target: Some(address),
+            };
+        }
+
+        return NormalizedInstruction {
+            text: format!("{mnemonic} sym:{symbol}"),
+            local_target: None,
+        };
+    }
+
+    if let Some(address) = parse_direct_address_operand(operands) {
+        if let Some(label) = local_labels.get(&address) {
+            return NormalizedInstruction {
+                text: format!("{mnemonic} {label}"),
+                local_target: Some(address),
+            };
+        }
+
+        return NormalizedInstruction {
+            text: format!("{mnemonic} addr:external"),
+            local_target: None,
+        };
+    }
+
+    NormalizedInstruction {
+        text: collapse_whitespace(&code),
+        local_target: None,
+    }
+}
+
+fn normalize_rip_data_reference(instruction_text: &str) -> String {
+    let Some(captures) = RIP_DATA_COMMENT_RE.captures(instruction_text) else {
+        return instruction_text.to_owned();
+    };
+    let Some(symbol_match) = captures.name("sym") else {
+        return instruction_text.to_owned();
+    };
+
+    let symbol = symbol_match.as_str();
+    let code = instruction_text
+        .split_once('#')
+        .map_or(instruction_text, |(code, _comment)| code);
+    let replacement = format!("[rip + data:{symbol}]");
+    RIP_RELATIVE_OPERAND_RE
+        .replace(code, replacement.as_str())
+        .into_owned()
+}
+
+fn strip_comment(instruction_text: &str) -> String {
+    instruction_text
+        .split_once('#')
+        .map_or(instruction_text, |(code, _comment)| code)
+        .trim()
+        .to_owned()
+}
+
+fn split_mnemonic_operands(instruction_text: &str) -> Option<(&str, &str)> {
+    let trimmed = instruction_text.trim();
+    let mnemonic = trimmed.split_whitespace().next()?;
+    let operands = trimmed[mnemonic.len()..].trim();
+    Some((mnemonic, operands))
+}
+
+fn parse_symbol_target(operands: &str) -> Option<(u64, String)> {
+    let captures = SYMBOL_TARGET_RE.captures(operands)?;
+    let address = parse_hex_address(captures.name("addr")?.as_str())?;
+    let symbol = captures.name("sym")?.as_str().to_owned();
+    Some((address, symbol))
+}
+
+fn parse_direct_address_operand(operands: &str) -> Option<u64> {
+    let operand = operands.trim();
+    if operand.contains('[') || operand.contains(',') {
+        return None;
+    }
+
+    let token = operand.split_whitespace().next()?;
+    parse_hex_address(token)
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_direct_control_flow_mnemonic(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic.to_ascii_lowercase().as_str(),
+        "call"
+            | "jmp"
+            | "ja"
+            | "jae"
+            | "jb"
+            | "jbe"
+            | "jc"
+            | "je"
+            | "jg"
+            | "jge"
+            | "jl"
+            | "jle"
+            | "jna"
+            | "jnae"
+            | "jnb"
+            | "jnbe"
+            | "jne"
+            | "jng"
+            | "jnge"
+            | "jnl"
+            | "jnle"
+            | "jno"
+            | "jnp"
+            | "jns"
+            | "jnz"
+            | "jo"
+            | "jp"
+            | "jpe"
+            | "jpo"
+            | "js"
+            | "jz"
+            | "loop"
+            | "loope"
+            | "loopne"
+            | "loopnz"
+            | "loopz"
+            | "xbegin"
+    )
 }
 
 fn render_progress(
@@ -1659,10 +1952,12 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, BinaryAnalysis, DiffMode, FunctionComparison, FunctionDisassembly,
-        PreparedComparison, SearchFilter, build_comparisons,
-        build_objdump_command, dump_comparisons, lcs_len, order_similarity,
-        parse_function_header, parse_instruction_mnemonic,
+        App, BinaryAnalysis, DiffMode, FunctionBuilder, FunctionComparison,
+        FunctionDisassembly, ParsedInstruction, PreparedComparison,
+        SearchFilter, build_comparisons, build_objdump_command,
+        dump_comparisons, finalize_function, lcs_len,
+        normalize_instruction_text, order_similarity, parse_function_header,
+        parse_instruction_line, parse_instruction_mnemonic,
         parse_instruction_text, temp_file_labels, weighted_jaccard,
         write_temp_disassembly,
     };
@@ -1693,6 +1988,105 @@ mod tests {
         let instruction = parse_instruction_text("113d:\tmov    rsp, rbp")
             .expect("expected instruction");
         assert_eq!(instruction, "mov    rsp, rbp");
+    }
+
+    #[test]
+    fn parses_instruction_address_and_text() {
+        let instruction =
+            parse_instruction_line("   b7add:\tjne\t0xb7b78 <relayExec+0xc8>")
+                .expect("expected instruction");
+        let mnemonic = parse_instruction_mnemonic(&instruction.text)
+            .expect("expected mnemonic");
+
+        assert_eq!(instruction.address, Some(0xb7add));
+        assert_eq!(instruction.text, "jne\t0xb7b78 <relayExec+0xc8>");
+        assert_eq!(mnemonic, "jne");
+    }
+
+    #[test]
+    fn normalizes_intra_function_jump_targets() {
+        let labels =
+            local_labels_for(&[(0x1000, ".L0000"), (0x1010, ".L0001")]);
+        let instruction =
+            normalize_instruction_text("jne 0x1010 <foo+0x10>", &labels);
+
+        assert_eq!(instruction.text, "jne .L0001");
+        assert_eq!(instruction.local_target, Some(0x1010));
+    }
+
+    #[test]
+    fn normalizes_symbol_call_targets() {
+        let instruction = normalize_instruction_text(
+            "call 0x4dac0 <redisAppendFormattedCommand$plt>",
+            &HashMap::new(),
+        );
+
+        assert_eq!(
+            instruction.text,
+            "call sym:redisAppendFormattedCommand$plt"
+        );
+        assert_eq!(instruction.local_target, None);
+    }
+
+    #[test]
+    fn normalizes_rip_relative_data_comments() {
+        let instruction = normalize_instruction_text(
+            "lea rsi, [rip - 0x6c46c] # 0x4b68a <.LC765>",
+            &HashMap::new(),
+        );
+
+        assert!(!instruction.text.contains("0x4b68a"));
+        assert!(!instruction.text.contains("- 0x6c46c"));
+        assert!(instruction.text.contains(".LC765"));
+    }
+
+    #[test]
+    fn preserves_non_target_immediates() {
+        let labels = HashMap::new();
+        let comparison = normalize_instruction_text("cmp eax, 0x6", &labels);
+        let offset = normalize_instruction_text(
+            "mov rax, qword ptr [rsi + 0x350]",
+            &labels,
+        );
+
+        assert_eq!(comparison.text, "cmp eax, 0x6");
+        assert_eq!(offset.text, "mov rax, qword ptr [rsi + 0x350]");
+    }
+
+    #[test]
+    fn rendered_output_strips_instruction_addresses() {
+        let function = finalize_function(&function_builder(
+            "foo",
+            &[
+                parsed_instruction(0x1000, "jne 0x1010 <foo+0x10>"),
+                parsed_instruction(0x1010, "ret"),
+            ],
+        ));
+
+        assert!(!function.rendered.contains("1000:"));
+        assert!(!function.rendered.contains("1010:"));
+        assert!(function.rendered.contains("<foo>:"));
+        assert!(function.rendered.contains("jne .L0001"));
+    }
+
+    #[test]
+    fn identical_detection_ignores_moved_function_addresses() {
+        let left = finalize_function(&function_builder(
+            "foo",
+            &[
+                parsed_instruction(0x1000, "jne 0x1010 <foo+0x10>"),
+                parsed_instruction(0x1010, "ret"),
+            ],
+        ));
+        let right = finalize_function(&function_builder(
+            "foo",
+            &[
+                parsed_instruction(0x2000, "jne 0x2010 <foo+0x10>"),
+                parsed_instruction(0x2010, "ret"),
+            ],
+        ));
+
+        assert_eq!(left.normalized_instructions, right.normalized_instructions);
     }
 
     #[test]
@@ -2169,6 +2563,42 @@ mod tests {
             instructions: vec!["mov".to_owned()],
             normalized_instructions: vec!["mov".to_owned()],
             rendered: "mov\n".to_owned(),
+        }
+    }
+
+    fn local_labels_for(entries: &[(u64, &str)]) -> HashMap<u64, String> {
+        entries
+            .iter()
+            .map(|(address, label)| (*address, (*label).to_owned()))
+            .collect()
+    }
+
+    fn parsed_instruction(address: u64, text: &str) -> ParsedInstruction {
+        ParsedInstruction {
+            original_line: format!("{address:x}:\t{text}"),
+            address: Some(address),
+            text: text.to_owned(),
+        }
+    }
+
+    fn function_builder(
+        name: &str,
+        instructions: &[ParsedInstruction],
+    ) -> FunctionBuilder {
+        let header_line = format!("0000000000001000 <{name}>:");
+        let mut lines = Vec::with_capacity(instructions.len() + 1);
+        lines.push(header_line.clone());
+        lines.extend(
+            instructions
+                .iter()
+                .map(|instruction| instruction.original_line.clone()),
+        );
+
+        FunctionBuilder {
+            name: name.to_owned(),
+            header_line,
+            lines,
+            instructions: instructions.to_vec(),
         }
     }
 
