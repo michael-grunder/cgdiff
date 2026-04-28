@@ -64,6 +64,9 @@ struct Cli {
     /// Include functions that only exist in one binary in the TUI.
     #[arg(long = "include-unique-functions")]
     include_unique_functions: bool,
+    /// Include shared functions with identical instruction text in the TUI.
+    #[arg(long = "include-identical-functions")]
+    include_identical_functions: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -105,6 +108,7 @@ struct BinaryAnalysis {
 #[derive(Clone, Debug)]
 struct FunctionDisassembly {
     instructions: Vec<String>,
+    normalized_instructions: Vec<String>,
     rendered: String,
 }
 
@@ -153,6 +157,7 @@ struct App {
     should_quit: bool,
     overlay: Option<Overlay>,
     include_unique_functions: bool,
+    include_identical_functions: bool,
 }
 
 impl App {
@@ -160,6 +165,7 @@ impl App {
         mut items: Vec<PreparedComparison>,
         diff_mode: DiffMode,
         include_unique_functions: bool,
+        include_identical_functions: bool,
     ) -> Self {
         sort_comparisons(&mut items, diff_mode);
         let mut table_state = TableState::default();
@@ -174,6 +180,7 @@ impl App {
             should_quit: false,
             overlay: None,
             include_unique_functions,
+            include_identical_functions,
         }
     }
 
@@ -270,12 +277,14 @@ fn main() -> Result<()> {
         &analysis_one,
         &analysis_two,
         cli.include_unique_functions,
+        cli.include_identical_functions,
     );
     let prepared = prepare_comparisons(comparisons)?;
     run_tui(
         prepared,
         cli.diff_mode,
         cli.include_unique_functions,
+        cli.include_identical_functions,
         &cli.editor,
     )?;
 
@@ -391,6 +400,7 @@ fn parse_objdump_output(
     let mut current_name: Option<String> = None;
     let mut current_lines = Vec::new();
     let mut current_instructions = Vec::new();
+    let mut current_normalized_instructions = Vec::new();
     let mut processed_bytes = 0_u64;
 
     loop {
@@ -421,6 +431,7 @@ fn parse_objdump_output(
                 &mut current_name,
                 &mut current_lines,
                 &mut current_instructions,
+                &mut current_normalized_instructions,
             );
             current_name = Some(name);
             current_lines.push(trimmed.to_owned());
@@ -428,8 +439,11 @@ fn parse_objdump_output(
         }
 
         if current_name.is_some() {
-            if let Some(instruction) = parse_instruction_mnemonic(trimmed) {
-                current_instructions.push(instruction);
+            if let Some(instruction) = parse_instruction_text(trimmed) {
+                current_normalized_instructions.push(instruction.clone());
+                let mnemonic = parse_instruction_mnemonic(&instruction)
+                    .expect("instruction text should contain a mnemonic");
+                current_instructions.push(mnemonic);
             }
             current_lines.push(trimmed.to_owned());
         }
@@ -440,6 +454,7 @@ fn parse_objdump_output(
         &mut current_name,
         &mut current_lines,
         &mut current_instructions,
+        &mut current_normalized_instructions,
     );
 
     Ok(functions)
@@ -487,11 +502,15 @@ fn flush_current_function(
     current_name: &mut Option<String>,
     current_lines: &mut Vec<String>,
     current_instructions: &mut Vec<String>,
+    current_normalized_instructions: &mut Vec<String>,
 ) {
     if let Some(name) = current_name.take() {
         let rendered = current_lines.join("\n");
         let disassembly = FunctionDisassembly {
             instructions: std::mem::take(current_instructions),
+            normalized_instructions: std::mem::take(
+                current_normalized_instructions,
+            ),
             rendered,
         };
         functions.insert(name, disassembly);
@@ -510,18 +529,24 @@ fn parse_function_header(line: &str) -> Option<String> {
     Some(line[start + 1..line.len() - suffix.len()].to_owned())
 }
 
-fn parse_instruction_mnemonic(line: &str) -> Option<String> {
+fn parse_instruction_text(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() || trimmed.ends_with(':') {
         return None;
     }
 
     let (_address, remainder) = trimmed.split_once(':')?;
-    let mnemonic = remainder.split_whitespace().find(|token| {
-        token.chars().any(char::is_alphabetic)
-            && !token.chars().all(|char| char.is_ascii_hexdigit())
-    })?;
-    Some(mnemonic.to_owned())
+    remainder.rsplit('\t').find_map(|segment| {
+        let segment = segment.trim();
+        (!segment.is_empty()).then(|| segment.to_owned())
+    })
+}
+
+fn parse_instruction_mnemonic(instruction_text: &str) -> Option<String> {
+    instruction_text
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
 }
 
 fn render_progress(
@@ -601,6 +626,7 @@ fn build_comparisons(
     analysis_one: &BinaryAnalysis,
     analysis_two: &BinaryAnalysis,
     include_unique_functions: bool,
+    include_identical_functions: bool,
 ) -> Vec<FunctionComparison> {
     let names = analysis_one
         .functions
@@ -643,12 +669,24 @@ fn build_comparisons(
         .filter(|comparison| {
             include_unique_functions || comparison.is_present_in_both()
         })
+        .filter(|comparison| {
+            include_identical_functions || !comparison.is_identical()
+        })
         .collect()
 }
 
 impl FunctionComparison {
     const fn is_present_in_both(&self) -> bool {
         self.function1.is_some() && self.function2.is_some()
+    }
+
+    fn is_identical(&self) -> bool {
+        self.function1
+            .as_ref()
+            .zip(self.function2.as_ref())
+            .is_some_and(|(left, right)| {
+                left.normalized_instructions == right.normalized_instructions
+            })
     }
 }
 
@@ -775,10 +813,16 @@ fn run_tui(
     items: Vec<PreparedComparison>,
     diff_mode: DiffMode,
     include_unique_functions: bool,
+    include_identical_functions: bool,
     editor: &str,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let mut app = App::new(items, diff_mode, include_unique_functions);
+    let mut app = App::new(
+        items,
+        diff_mode,
+        include_unique_functions,
+        include_identical_functions,
+    );
 
     loop {
         terminal.draw(|frame| draw(frame, &mut app))?;
@@ -883,6 +927,15 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Span::raw(format!(
                 "unique: {}",
                 if app.include_unique_functions {
+                    "shown"
+                } else {
+                    "hidden"
+                }
+            )),
+            Span::raw("  "),
+            Span::raw(format!(
+                "identical: {}",
+                if app.include_identical_functions {
                     "shown"
                 } else {
                     "hidden"
@@ -1020,6 +1073,9 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("3: sort by ops score"),
         Line::from("i: toggle selection info popup"),
         Line::from("Enter: open diff editor"),
+        Line::from(
+            "Default view hides identical shared functions and unique functions.",
+        ),
         Line::from("?: toggle this help"),
     ])
     .block(Block::default().title("Help").borders(Borders::ALL))
@@ -1074,7 +1130,8 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 mod tests {
     use super::{
         FunctionComparison, FunctionDisassembly, lcs_len, order_similarity,
-        parse_function_header, parse_instruction_mnemonic, weighted_jaccard,
+        parse_function_header, parse_instruction_mnemonic,
+        parse_instruction_text, weighted_jaccard,
     };
 
     #[test]
@@ -1086,10 +1143,12 @@ mod tests {
 
     #[test]
     fn parses_instruction_mnemonics() {
-        let mnemonic = parse_instruction_mnemonic(
+        let instruction = parse_instruction_text(
             "   113d:\t48 89 e5             \tmov    %rsp,%rbp",
         )
-        .expect("expected mnemonic");
+        .expect("expected instruction");
+        let mnemonic = parse_instruction_mnemonic(&instruction)
+            .expect("expected mnemonic");
         assert_eq!(mnemonic, "mov");
     }
 
@@ -1122,10 +1181,12 @@ mod tests {
             name: "shared".to_owned(),
             function1: Some(FunctionDisassembly {
                 instructions: Vec::new(),
+                normalized_instructions: Vec::new(),
                 rendered: String::new(),
             }),
             function2: Some(FunctionDisassembly {
                 instructions: Vec::new(),
+                normalized_instructions: Vec::new(),
                 rendered: String::new(),
             }),
             combined_score: 1.0,
@@ -1136,6 +1197,7 @@ mod tests {
             name: "unique".to_owned(),
             function1: Some(FunctionDisassembly {
                 instructions: Vec::new(),
+                normalized_instructions: Vec::new(),
                 rendered: String::new(),
             }),
             function2: None,
@@ -1146,5 +1208,49 @@ mod tests {
 
         assert!(shared.is_present_in_both());
         assert!(!unique.is_present_in_both());
+    }
+
+    #[test]
+    fn detects_identical_functions_from_normalized_instructions() {
+        let left = FunctionComparison {
+            name: "shared".to_owned(),
+            function1: Some(FunctionDisassembly {
+                instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                normalized_instructions: vec![
+                    "mov %rsp,%rbp".to_owned(),
+                    "ret".to_owned(),
+                ],
+                rendered: String::new(),
+            }),
+            function2: Some(FunctionDisassembly {
+                instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                normalized_instructions: vec![
+                    "mov %rsp,%rbp".to_owned(),
+                    "ret".to_owned(),
+                ],
+                rendered: String::new(),
+            }),
+            combined_score: 1.0,
+            count_score: 1.0,
+            order_score: 1.0,
+        };
+        let right = FunctionComparison {
+            name: "different".to_owned(),
+            function1: left.function1.clone(),
+            function2: Some(FunctionDisassembly {
+                instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                normalized_instructions: vec![
+                    "mov %rsp,%rbp".to_owned(),
+                    "ret $0x8".to_owned(),
+                ],
+                rendered: String::new(),
+            }),
+            combined_score: 0.5,
+            count_score: 1.0,
+            order_score: 1.0,
+        };
+
+        assert!(left.is_identical());
+        assert!(!right.is_identical());
     }
 }
