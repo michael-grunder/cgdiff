@@ -66,7 +66,8 @@ struct Cli {
     /// Include functions that only exist in one binary in the TUI.
     #[arg(long = "include-unique-functions")]
     include_unique_functions: bool,
-    /// Include shared functions with identical instruction text in the TUI.
+    /// Include shared functions with identical instruction text or a perfect
+    /// 1.000 similarity score in the TUI.
     #[arg(long = "include-identical-functions")]
     include_identical_functions: bool,
     /// Pre-filter functions by case-insensitive substring or `/regex/`.
@@ -966,7 +967,8 @@ fn build_comparisons(
             include_unique_functions || comparison.is_present_in_both()
         })
         .filter(|comparison| {
-            include_identical_functions || !comparison.is_identical()
+            include_identical_functions
+                || !comparison.is_effectively_identical()
         })
         .collect()
 }
@@ -983,6 +985,15 @@ impl FunctionComparison {
             .is_some_and(|(left, right)| {
                 left.normalized_instructions == right.normalized_instructions
             })
+    }
+
+    fn has_perfect_similarity(&self) -> bool {
+        self.is_present_in_both()
+            && (self.combined_score - 1.0).abs() < f64::EPSILON
+    }
+
+    fn is_effectively_identical(&self) -> bool {
+        self.is_identical() || self.has_perfect_similarity()
     }
 }
 
@@ -1557,7 +1568,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("i: toggle selection info popup"),
         Line::from("Enter: open diff editor"),
         Line::from(
-            "Default view hides identical shared functions and unique functions.",
+            "Default view hides unique functions and shared functions that are identical or score 1.000.",
         ),
         Line::from("?: toggle this help"),
     ])
@@ -1788,6 +1799,38 @@ mod tests {
 
         assert!(left.is_identical());
         assert!(!right.is_identical());
+        assert!(left.is_effectively_identical());
+        assert!(!right.is_effectively_identical());
+    }
+
+    #[test]
+    fn treats_perfect_similarity_as_effectively_identical() {
+        let comparison = FunctionComparison {
+            name: "shared".to_owned(),
+            function1: Some(FunctionDisassembly {
+                instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                normalized_instructions: vec![
+                    "mov %rsp,%rbp".to_owned(),
+                    "ret".to_owned(),
+                ],
+                rendered: String::new(),
+            }),
+            function2: Some(FunctionDisassembly {
+                instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                normalized_instructions: vec![
+                    "mov %rax,%rbx".to_owned(),
+                    "ret".to_owned(),
+                ],
+                rendered: String::new(),
+            }),
+            combined_score: 1.0,
+            count_score: 1.0,
+            order_score: 1.0,
+        };
+
+        assert!(!comparison.is_identical());
+        assert!(comparison.has_perfect_similarity());
+        assert!(comparison.is_effectively_identical());
     }
 
     #[test]
@@ -1991,6 +2034,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["AlphaRelay", "relay_worker"]
         );
+    }
+
+    #[test]
+    fn build_comparisons_hides_perfect_similarity_by_default() {
+        let analysis_one = BinaryAnalysis {
+            functions: HashMap::from([(
+                "shared".to_owned(),
+                FunctionDisassembly {
+                    instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                    normalized_instructions: vec![
+                        "mov %rsp,%rbp".to_owned(),
+                        "ret".to_owned(),
+                    ],
+                    rendered: String::new(),
+                },
+            )]),
+        };
+        let analysis_two = BinaryAnalysis {
+            functions: HashMap::from([(
+                "shared".to_owned(),
+                FunctionDisassembly {
+                    instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                    normalized_instructions: vec![
+                        "mov %rax,%rbx".to_owned(),
+                        "ret".to_owned(),
+                    ],
+                    rendered: String::new(),
+                },
+            )]),
+        };
+
+        let hidden =
+            build_comparisons(&analysis_one, &analysis_two, false, false, None);
+        let shown =
+            build_comparisons(&analysis_one, &analysis_two, false, true, None);
+
+        assert!(hidden.is_empty());
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].name, "shared");
+        assert!(shown[0].has_perfect_similarity());
     }
 
     fn visible_names(app: &App) -> Vec<String> {
