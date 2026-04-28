@@ -1426,6 +1426,7 @@ fn write_temp_disassembly(contents: &str, label: &str) -> Result<TempPath> {
     let prefix = format!("cgdiff-{label}-");
     let mut file = Builder::new()
         .prefix(&prefix)
+        .suffix(".s")
         .tempfile()
         .context("failed to create temp disassembly file")?;
     file.write_all(contents.as_bytes())
@@ -2666,5 +2667,6 @@ mod tests {
         let path = temp_path.display().to_string();
 
         assert!(path.contains("cgdiff-LEFT-foo.so-"));
+        assert!(path.ends_with(".s"));
     }
 }
