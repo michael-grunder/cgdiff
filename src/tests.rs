@@ -576,14 +576,16 @@ fn dumps_sorted_stdio_table() {
     let second = lines.next().expect("missing second row");
 
     assert!(header.contains("Function"));
+    assert!(header.contains("Left ops"));
+    assert!(header.contains("Right ops"));
     assert!(header.contains("combined"));
-    assert!(header.contains("count"));
-    assert!(header.contains("ops"));
     assert!(header.contains("Bin1"));
     assert!(header.contains("Bin2"));
     assert!(first.starts_with("alpha"));
+    assert!(first.contains("       1          0     0.100"));
     assert!(first.ends_with(" yes    no"));
     assert!(second.starts_with("beta"));
+    assert!(second.contains("       1          1     0.400"));
     assert!(second.ends_with(" yes   yes"));
 }
 

@@ -127,24 +127,22 @@ pub(crate) fn dump_comparisons(
     if show_presence_columns {
         writeln!(
             writer,
-            "{:<function_width$}  {:>8}  {:>8}  {:>8}  {:>8}  {:>4}  {:>4}",
+            "{:<function_width$}  {:>8}  {:>9}  {:>8}  {:>4}  {:>4}",
             "Function",
+            "Left ops",
+            "Right ops",
             diff_mode.label(),
-            "combined",
-            "count",
-            "ops",
             "Bin1",
             "Bin2",
         )?;
     } else {
         writeln!(
             writer,
-            "{:<function_width$}  {:>8}  {:>8}  {:>8}  {:>8}",
+            "{:<function_width$}  {:>8}  {:>9}  {:>8}",
             "Function",
+            "Left ops",
+            "Right ops",
             diff_mode.label(),
-            "combined",
-            "count",
-            "ops",
         )?;
     }
 
@@ -152,24 +150,22 @@ pub(crate) fn dump_comparisons(
         if show_presence_columns {
             writeln!(
                 writer,
-                "{:<function_width$}  {:>8.3}  {:>8.3}  {:>8.3}  {:>8.3}  {:>4}  {:>4}",
+                "{:<function_width$}  {:>8}  {:>9}  {:>8.3}  {:>4}  {:>4}",
                 comparison.name,
+                comparison.left_op_count(),
+                comparison.right_op_count(),
                 diff_mode.score(&comparison),
-                comparison.combined_score,
-                comparison.count_score,
-                comparison.order_score,
                 yes_or_no(comparison.function1.is_some()),
                 yes_or_no(comparison.function2.is_some()),
             )?;
         } else {
             writeln!(
                 writer,
-                "{:<function_width$}  {:>8.3}  {:>8.3}  {:>8.3}  {:>8.3}",
+                "{:<function_width$}  {:>8}  {:>9}  {:>8.3}",
                 comparison.name,
+                comparison.left_op_count(),
+                comparison.right_op_count(),
                 diff_mode.score(&comparison),
-                comparison.combined_score,
-                comparison.count_score,
-                comparison.order_score,
             )?;
         }
     }
