@@ -20,7 +20,10 @@ use ratatui::widgets::{
 
 use crate::cli::DiffMode;
 use crate::filter::SearchFilter;
-use crate::output::{PreparedComparison, sort_comparisons};
+use crate::output::{
+    PreparedComparison, comparison_table_headers, comparison_table_row,
+    comparison_table_shows_presence_columns, sort_comparisons,
+};
 
 const EDITOR_FILE1_PLACEHOLDER: &str = "{file1}";
 const EDITOR_FILE2_PLACEHOLDER: &str = "{file2}";
@@ -404,29 +407,22 @@ fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
-    let show_presence_columns = app.include_unique_functions;
+    let show_presence_columns = comparison_table_shows_presence_columns(
+        app.filtered_indices
+            .iter()
+            .map(|index| &app.items[*index].comparison),
+    );
+    let headers =
+        comparison_table_headers(app.diff_mode, show_presence_columns);
     let table = if show_presence_columns {
         let rows = app.filtered_indices.iter().map(|index| {
             let item = &app.items[*index];
-            Row::new([
-                Cell::from(item.comparison.name.clone()),
-                Cell::from(item.comparison.left_op_count().to_string()),
-                Cell::from(item.comparison.right_op_count().to_string()),
-                Cell::from(format!(
-                    "{:.3}",
-                    app.diff_mode.score(&item.comparison)
-                )),
-                Cell::from(if item.comparison.function1.is_some() {
-                    "yes"
-                } else {
-                    "no"
-                }),
-                Cell::from(if item.comparison.function2.is_some() {
-                    "yes"
-                } else {
-                    "no"
-                }),
-            ])
+            let row = comparison_table_row(
+                &item.comparison,
+                app.diff_mode,
+                show_presence_columns,
+            );
+            Row::new(row.cells.into_iter().map(Cell::from))
         });
 
         let widths = [
@@ -439,15 +435,7 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
         ];
 
         Table::new(rows, widths).header(
-            Row::new([
-                "Function",
-                "Left ops",
-                "Right ops",
-                app.diff_mode.label(),
-                "Bin1",
-                "Bin2",
-            ])
-            .style(
+            Row::new(headers).style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -456,15 +444,12 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     } else {
         let rows = app.filtered_indices.iter().map(|index| {
             let item = &app.items[*index];
-            Row::new([
-                Cell::from(item.comparison.name.clone()),
-                Cell::from(item.comparison.left_op_count().to_string()),
-                Cell::from(item.comparison.right_op_count().to_string()),
-                Cell::from(format!(
-                    "{:.3}",
-                    app.diff_mode.score(&item.comparison)
-                )),
-            ])
+            let row = comparison_table_row(
+                &item.comparison,
+                app.diff_mode,
+                show_presence_columns,
+            );
+            Row::new(row.cells.into_iter().map(Cell::from))
         });
 
         let widths = [
@@ -475,13 +460,7 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
         ];
 
         Table::new(rows, widths).header(
-            Row::new([
-                "Function",
-                "Left ops",
-                "Right ops",
-                app.diff_mode.label(),
-            ])
-            .style(
+            Row::new(headers).style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
