@@ -61,6 +61,9 @@ struct Cli {
     /// Sort mode for similarity results.
     #[arg(short = 'd', long = "diff-mode", default_value_t = DiffMode::Combined)]
     diff_mode: DiffMode,
+    /// Include functions that only exist in one binary in the TUI.
+    #[arg(long = "include-unique-functions")]
+    include_unique_functions: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -89,7 +92,7 @@ impl DiffMode {
         match self {
             Self::Combined => "combined",
             Self::Count => "count",
-            Self::Order => "order",
+            Self::Order => "ops",
         }
     }
 }
@@ -137,16 +140,27 @@ struct ProgressState {
 }
 
 #[derive(Debug)]
+enum Overlay {
+    Help,
+    Info,
+}
+
+#[derive(Debug)]
 struct App {
     items: Vec<PreparedComparison>,
     diff_mode: DiffMode,
     table_state: TableState,
     should_quit: bool,
-    help_visible: bool,
+    overlay: Option<Overlay>,
+    include_unique_functions: bool,
 }
 
 impl App {
-    fn new(mut items: Vec<PreparedComparison>, diff_mode: DiffMode) -> Self {
+    fn new(
+        mut items: Vec<PreparedComparison>,
+        diff_mode: DiffMode,
+        include_unique_functions: bool,
+    ) -> Self {
         sort_comparisons(&mut items, diff_mode);
         let mut table_state = TableState::default();
         if !items.is_empty() {
@@ -158,7 +172,8 @@ impl App {
             diff_mode,
             table_state,
             should_quit: false,
-            help_visible: false,
+            overlay: None,
+            include_unique_functions,
         }
     }
 
@@ -199,6 +214,31 @@ impl App {
             self.table_state.select(Some(0));
         }
     }
+
+    fn toggle_details(&mut self) {
+        if self.selected().is_some() {
+            self.overlay = match self.overlay {
+                Some(Overlay::Info) => None,
+                _ => Some(Overlay::Info),
+            };
+        }
+    }
+
+    const fn toggle_help(&mut self) {
+        self.overlay = match self.overlay {
+            Some(Overlay::Help) => None,
+            _ => Some(Overlay::Help),
+        };
+    }
+
+    const fn close_overlay(&mut self) -> bool {
+        if self.overlay.is_some() {
+            self.overlay = None;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -226,9 +266,18 @@ fn main() -> Result<()> {
     let analysis_one = join_analysis(handle_one, "binary-1")?;
     let analysis_two = join_analysis(handle_two, "binary-2")?;
 
-    let comparisons = build_comparisons(&analysis_one, &analysis_two);
+    let comparisons = build_comparisons(
+        &analysis_one,
+        &analysis_two,
+        cli.include_unique_functions,
+    );
     let prepared = prepare_comparisons(comparisons)?;
-    run_tui(prepared, cli.diff_mode, &cli.editor)?;
+    run_tui(
+        prepared,
+        cli.diff_mode,
+        cli.include_unique_functions,
+        &cli.editor,
+    )?;
 
     Ok(())
 }
@@ -551,6 +600,7 @@ fn print_progress(states: &HashMap<String, ProgressState>) -> Result<()> {
 fn build_comparisons(
     analysis_one: &BinaryAnalysis,
     analysis_two: &BinaryAnalysis,
+    include_unique_functions: bool,
 ) -> Vec<FunctionComparison> {
     let names = analysis_one
         .functions
@@ -590,7 +640,16 @@ fn build_comparisons(
                 order_score,
             }
         })
+        .filter(|comparison| {
+            include_unique_functions || comparison.is_present_in_both()
+        })
         .collect()
+}
+
+impl FunctionComparison {
+    const fn is_present_in_both(&self) -> bool {
+        self.function1.is_some() && self.function2.is_some()
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -715,10 +774,11 @@ fn sort_comparisons(items: &mut [PreparedComparison], diff_mode: DiffMode) {
 fn run_tui(
     items: Vec<PreparedComparison>,
     diff_mode: DiffMode,
+    include_unique_functions: bool,
     editor: &str,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let mut app = App::new(items, diff_mode);
+    let mut app = App::new(items, diff_mode, include_unique_functions);
 
     loop {
         terminal.draw(|frame| draw(frame, &mut app))?;
@@ -731,27 +791,33 @@ fn run_tui(
             .context("failed polling terminal events")?
         {
             match event::read().context("failed reading terminal event")? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key
-                    .code
-                {
-                    KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                    KeyCode::Down | KeyCode::Char('j') => app.next(),
-                    KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                    KeyCode::Char('1') => app.resort(DiffMode::Combined),
-                    KeyCode::Char('2') => app.resort(DiffMode::Count),
-                    KeyCode::Char('3') => app.resort(DiffMode::Order),
-                    KeyCode::Char('?') => app.help_visible = !app.help_visible,
-                    KeyCode::Enter => {
-                        if let Some(selection) = app.selected() {
-                            restore_terminal(&mut terminal)?;
-                            let launch_result =
-                                launch_editor(editor, selection);
-                            terminal = setup_terminal()?;
-                            launch_result?;
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    match key.code {
+                        KeyCode::Esc if !app.close_overlay() => {
+                            app.should_quit = true;
                         }
+                        KeyCode::Char('q') => app.should_quit = true,
+                        KeyCode::Down | KeyCode::Char('j') => app.next(),
+                        KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                        KeyCode::Char('1') => app.resort(DiffMode::Combined),
+                        KeyCode::Char('2') => app.resort(DiffMode::Count),
+                        KeyCode::Char('3') => app.resort(DiffMode::Order),
+                        KeyCode::Char('i' | 'I') => {
+                            app.toggle_details();
+                        }
+                        KeyCode::Char('?') => app.toggle_help(),
+                        KeyCode::Enter => {
+                            if let Some(selection) = app.selected() {
+                                restore_terminal(&mut terminal)?;
+                                let launch_result =
+                                    launch_editor(editor, selection);
+                                terminal = setup_terminal()?;
+                                launch_result?;
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }
@@ -792,8 +858,10 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     draw_body(frame, vertical[1], app);
     draw_footer(frame, vertical[2], app);
 
-    if app.help_visible {
-        draw_help(frame);
+    match app.overlay {
+        Some(Overlay::Help) => draw_help(frame),
+        Some(Overlay::Info) => draw_details_popup(frame, app.selected()),
+        None => {}
     }
 }
 
@@ -811,6 +879,15 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             ),
             Span::raw("  "),
             Span::raw(format!("sort: {}", app.diff_mode.label())),
+            Span::raw("  "),
+            Span::raw(format!(
+                "unique: {}",
+                if app.include_unique_functions {
+                    "shown"
+                } else {
+                    "hidden"
+                }
+            )),
         ]),
         Line::from(format!("selected: {selected}")),
     ])
@@ -820,22 +897,14 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
-
-    draw_table(frame, horizontal[0], app);
-    draw_details(frame, horizontal[1], app.selected());
+    draw_table(frame, area, app);
 }
 
 fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     let rows = app.items.iter().map(|item| {
         Row::new([
             Cell::from(item.comparison.name.clone()),
-            Cell::from(format!("{:.3}", item.comparison.combined_score)),
-            Cell::from(format!("{:.3}", item.comparison.count_score)),
-            Cell::from(format!("{:.3}", item.comparison.order_score)),
+            Cell::from(format!("{:.3}", app.diff_mode.score(&item.comparison))),
             Cell::from(if item.comparison.function1.is_some() {
                 "yes"
             } else {
@@ -850,23 +919,19 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     });
 
     let widths = [
-        Constraint::Percentage(46),
-        Constraint::Length(10),
-        Constraint::Length(10),
+        Constraint::Percentage(64),
         Constraint::Length(10),
         Constraint::Length(7),
         Constraint::Length(7),
     ];
     let table = Table::new(rows, widths)
         .header(
-            Row::new([
-                "Function", "Combined", "Count", "Order", "Bin1", "Bin2",
-            ])
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Row::new(["Function", app.diff_mode.label(), "Bin1", "Bin2"])
+                .style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
         )
         .block(Block::default().title("Functions").borders(Borders::ALL))
         .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::Black))
@@ -875,12 +940,8 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn draw_details(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    selection: Option<&PreparedComparison>,
-) {
-    let lines = selection.map_or_else(
+fn detail_lines(selection: Option<&PreparedComparison>) -> Vec<Line<'static>> {
+    selection.map_or_else(
         || vec![Line::from("No functions were found to compare.")],
         |selection| {
             let function1 = selection
@@ -923,17 +984,24 @@ fn draw_details(
                 ),
             ]
         },
-    );
+    )
+}
 
-    let details = Paragraph::new(lines)
-        .block(Block::default().title("Details").borders(Borders::ALL))
+fn draw_details_popup(
+    frame: &mut ratatui::Frame<'_>,
+    selection: Option<&PreparedComparison>,
+) {
+    let popup = centered_rect(70, 60, frame.area());
+    frame.render_widget(Clear, popup);
+    let details = Paragraph::new(detail_lines(selection))
+        .block(Block::default().title("Info").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
-    frame.render_widget(details, area);
+    frame.render_widget(details, popup);
 }
 
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let footer = Paragraph::new(format!(
-        "j/k or arrows move  Enter diff  1/2/3 resort  ? help  q quit  items: {}",
+        "j/k or arrows move  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
         app.items.len()
     ))
     .block(Block::default().borders(Borders::ALL));
@@ -949,7 +1017,8 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("k / Up: previous function"),
         Line::from("1: sort by combined score"),
         Line::from("2: sort by count score"),
-        Line::from("3: sort by order score"),
+        Line::from("3: sort by ops score"),
+        Line::from("i: toggle selection info popup"),
         Line::from("Enter: open diff editor"),
         Line::from("?: toggle this help"),
     ])
@@ -1004,8 +1073,8 @@ fn launch_editor(editor: &str, selection: &PreparedComparison) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        lcs_len, order_similarity, parse_function_header,
-        parse_instruction_mnemonic, weighted_jaccard,
+        FunctionComparison, FunctionDisassembly, lcs_len, order_similarity,
+        parse_function_header, parse_instruction_mnemonic, weighted_jaccard,
     };
 
     #[test]
@@ -1045,5 +1114,37 @@ mod tests {
         let right = vec!["mov".to_owned(), "jmp".to_owned(), "ret".to_owned()];
         let score = order_similarity(&left, &right);
         assert!((score - (4.0 / 6.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn identifies_functions_present_in_both_binaries() {
+        let shared = FunctionComparison {
+            name: "shared".to_owned(),
+            function1: Some(FunctionDisassembly {
+                instructions: Vec::new(),
+                rendered: String::new(),
+            }),
+            function2: Some(FunctionDisassembly {
+                instructions: Vec::new(),
+                rendered: String::new(),
+            }),
+            combined_score: 1.0,
+            count_score: 1.0,
+            order_score: 1.0,
+        };
+        let unique = FunctionComparison {
+            name: "unique".to_owned(),
+            function1: Some(FunctionDisassembly {
+                instructions: Vec::new(),
+                rendered: String::new(),
+            }),
+            function2: None,
+            combined_score: 0.0,
+            count_score: 0.0,
+            order_score: 0.0,
+        };
+
+        assert!(shared.is_present_in_both());
+        assert!(!unique.is_present_in_both());
     }
 }
