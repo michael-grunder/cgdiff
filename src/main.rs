@@ -978,6 +978,18 @@ impl FunctionComparison {
         self.function1.is_some() && self.function2.is_some()
     }
 
+    fn left_op_count(&self) -> usize {
+        self.function1
+            .as_ref()
+            .map_or(0, |function| function.instructions.len())
+    }
+
+    fn right_op_count(&self) -> usize {
+        self.function2
+            .as_ref()
+            .map_or(0, |function| function.instructions.len())
+    }
+
     fn is_identical(&self) -> bool {
         self.function1
             .as_ref()
@@ -1411,6 +1423,8 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
             let item = &app.items[*index];
             Row::new([
                 Cell::from(item.comparison.name.clone()),
+                Cell::from(item.comparison.left_op_count().to_string()),
+                Cell::from(item.comparison.right_op_count().to_string()),
                 Cell::from(format!(
                     "{:.3}",
                     app.diff_mode.score(&item.comparison)
@@ -1429,25 +1443,36 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
         });
 
         let widths = [
-            Constraint::Percentage(64),
+            Constraint::Percentage(50),
+            Constraint::Length(10),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(7),
             Constraint::Length(7),
         ];
 
         Table::new(rows, widths).header(
-            Row::new(["Function", app.diff_mode.label(), "Bin1", "Bin2"])
-                .style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
+            Row::new([
+                "Function",
+                "Left ops",
+                "Right ops",
+                app.diff_mode.label(),
+                "Bin1",
+                "Bin2",
+            ])
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         )
     } else {
         let rows = app.filtered_indices.iter().map(|index| {
             let item = &app.items[*index];
             Row::new([
                 Cell::from(item.comparison.name.clone()),
+                Cell::from(item.comparison.left_op_count().to_string()),
+                Cell::from(item.comparison.right_op_count().to_string()),
                 Cell::from(format!(
                     "{:.3}",
                     app.diff_mode.score(&item.comparison)
@@ -1455,10 +1480,21 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
             ])
         });
 
-        let widths = [Constraint::Percentage(78), Constraint::Length(10)];
+        let widths = [
+            Constraint::Percentage(60),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Length(10),
+        ];
 
         Table::new(rows, widths).header(
-            Row::new(["Function", app.diff_mode.label()]).style(
+            Row::new([
+                "Function",
+                "Left ops",
+                "Right ops",
+                app.diff_mode.label(),
+            ])
+            .style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -1831,6 +1867,33 @@ mod tests {
         assert!(!comparison.is_identical());
         assert!(comparison.has_perfect_similarity());
         assert!(comparison.is_effectively_identical());
+    }
+
+    #[test]
+    fn reports_left_and_right_op_counts() {
+        let comparison = FunctionComparison {
+            name: "shared".to_owned(),
+            function1: Some(FunctionDisassembly {
+                instructions: vec![
+                    "mov".to_owned(),
+                    "call".to_owned(),
+                    "ret".to_owned(),
+                ],
+                normalized_instructions: Vec::new(),
+                rendered: String::new(),
+            }),
+            function2: Some(FunctionDisassembly {
+                instructions: vec!["mov".to_owned(), "ret".to_owned()],
+                normalized_instructions: Vec::new(),
+                rendered: String::new(),
+            }),
+            combined_score: 0.0,
+            count_score: 0.0,
+            order_score: 0.0,
+        };
+
+        assert_eq!(comparison.left_op_count(), 3);
+        assert_eq!(comparison.right_op_count(), 2);
     }
 
     #[test]
