@@ -19,6 +19,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
     enable_raw_mode,
 };
+use memchr::{memchr_iter, memchr2_iter};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -28,6 +29,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap,
 };
 use rayon::prelude::*;
+use regex::{Regex, RegexBuilder};
 use tempfile::{NamedTempFile, TempPath};
 
 const VERSION: &str = concat!(
@@ -155,6 +157,141 @@ struct SearchState {
     previous_query: String,
 }
 
+trait FilterMatcher {
+    fn matches(&self, candidate: &str) -> bool;
+}
+
+#[derive(Debug)]
+struct SubstringFilter {
+    needle: Vec<u8>,
+    first_lower: u8,
+    first_upper: u8,
+}
+
+impl SubstringFilter {
+    fn new(query: &str) -> Self {
+        let needle = query.as_bytes().to_vec();
+        let first = needle[0];
+        Self {
+            needle,
+            first_lower: first.to_ascii_lowercase(),
+            first_upper: first.to_ascii_uppercase(),
+        }
+    }
+}
+
+impl FilterMatcher for SubstringFilter {
+    fn matches(&self, candidate: &str) -> bool {
+        let candidate = candidate.as_bytes();
+        if self.needle.len() > candidate.len() {
+            return false;
+        }
+
+        let candidates = if self.first_lower == self.first_upper {
+            EitherMemchrIter::Single(memchr_iter(self.first_lower, candidate))
+        } else {
+            EitherMemchrIter::Dual(memchr2_iter(
+                self.first_lower,
+                self.first_upper,
+                candidate,
+            ))
+        };
+
+        for index in candidates {
+            let Some(window) = candidate.get(index..index + self.needle.len())
+            else {
+                break;
+            };
+            if window.eq_ignore_ascii_case(&self.needle) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+#[derive(Debug)]
+struct RegexFilter {
+    regex: Regex,
+}
+
+impl FilterMatcher for RegexFilter {
+    fn matches(&self, candidate: &str) -> bool {
+        self.regex.is_match(candidate)
+    }
+}
+
+enum EitherMemchrIter<'a> {
+    Single(memchr::Memchr<'a>),
+    Dual(memchr::Memchr2<'a>),
+}
+
+impl Iterator for EitherMemchrIter<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Single(iter) => iter.next(),
+            Self::Dual(iter) => iter.next(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SearchFilter {
+    Empty,
+    Substring(SubstringFilter),
+    Regex(RegexFilter),
+    InvalidRegex { message: String },
+}
+
+impl SearchFilter {
+    fn compile(query: &str) -> Self {
+        if query.is_empty() {
+            return Self::Empty;
+        }
+
+        if let Some(pattern) = parse_regex_pattern(query) {
+            return match RegexBuilder::new(pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(regex) => Self::Regex(RegexFilter { regex }),
+                Err(error) => Self::InvalidRegex {
+                    message: error.to_string(),
+                },
+            };
+        }
+
+        Self::Substring(SubstringFilter::new(query))
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        match self {
+            Self::Empty => true,
+            Self::Substring(filter) => filter.matches(candidate),
+            Self::Regex(filter) => filter.matches(candidate),
+            Self::InvalidRegex { .. } => false,
+        }
+    }
+
+    const fn error_message(&self) -> Option<&str> {
+        match self {
+            Self::InvalidRegex { message } => Some(message.as_str()),
+            Self::Empty | Self::Substring(_) | Self::Regex(_) => None,
+        }
+    }
+}
+
+fn parse_regex_pattern(query: &str) -> Option<&str> {
+    if query.len() >= 2 && query.starts_with('/') && query.ends_with('/') {
+        Some(&query[1..query.len() - 1])
+    } else {
+        None
+    }
+}
+
 #[derive(Debug)]
 struct App {
     items: Vec<PreparedComparison>,
@@ -166,6 +303,7 @@ struct App {
     include_unique_functions: bool,
     include_identical_functions: bool,
     search_query: String,
+    search_filter: SearchFilter,
     search_state: Option<SearchState>,
 }
 
@@ -193,6 +331,7 @@ impl App {
             include_unique_functions,
             include_identical_functions,
             search_query: String::new(),
+            search_filter: SearchFilter::Empty,
             search_state: None,
         }
     }
@@ -317,23 +456,22 @@ impl App {
         )
     }
 
+    const fn search_error(&self) -> Option<&str> {
+        self.search_filter.error_message()
+    }
+
     const fn visible_count(&self) -> usize {
         self.filtered_indices.len()
     }
 
     fn rebuild_filter(&mut self, selected_name: Option<&str>) {
-        let query = self.search_query.to_ascii_lowercase();
+        self.search_filter = SearchFilter::compile(&self.search_query);
         self.filtered_indices = self
             .items
             .iter()
             .enumerate()
             .filter(|(_, item)| {
-                query.is_empty()
-                    || item
-                        .comparison
-                        .name
-                        .to_ascii_lowercase()
-                        .contains(&query)
+                self.search_filter.matches(&item.comparison.name)
             })
             .map(|(index, _)| index)
             .collect();
@@ -1222,11 +1360,16 @@ fn draw_details_popup(
 
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let footer_text = if app.is_searching() {
-        format!(
+        let mut footer = format!(
             "/{}  Enter apply  Esc cancel  Backspace delete  matches: {}",
             app.search_prompt(),
             app.visible_count()
-        )
+        );
+        if let Some(error) = app.search_error() {
+            footer.push_str("  regex error: ");
+            footer.push_str(error);
+        }
+        footer
     } else {
         format!(
             "j/k or arrows move  / filter  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
@@ -1245,7 +1388,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("q / Esc: quit"),
         Line::from("j / Down: next function"),
         Line::from("k / Up: previous function"),
-        Line::from("/: filter functions by substring"),
+        Line::from("/: filter by substring or /regex/"),
         Line::from("1: sort by combined score"),
         Line::from("2: sort by count score"),
         Line::from("3: sort by ops score"),
@@ -1510,6 +1653,55 @@ mod tests {
             app.selected().map(|item| item.comparison.name.as_str()),
             Some("AlphaRelay")
         );
+    }
+
+    #[test]
+    fn filters_visible_items_with_regex() {
+        let mut app = App::new(
+            vec![
+                prepared_comparison("AlphaRelay", 0.1),
+                prepared_comparison("relay_worker", 0.2),
+                prepared_comparison("other", 0.3),
+            ],
+            DiffMode::Combined,
+            false,
+            false,
+        );
+
+        app.start_search();
+        for character in "/^relay|alpha/".chars() {
+            app.append_search_char(character);
+        }
+        app.confirm_search();
+
+        assert_eq!(
+            visible_names(&app),
+            vec!["AlphaRelay".to_owned(), "relay_worker".to_owned()]
+        );
+        assert!(app.search_error().is_none());
+    }
+
+    #[test]
+    fn invalid_regex_yields_no_matches_and_error() {
+        let mut app = App::new(
+            vec![
+                prepared_comparison("AlphaRelay", 0.1),
+                prepared_comparison("relay_worker", 0.2),
+            ],
+            DiffMode::Combined,
+            false,
+            false,
+        );
+
+        app.start_search();
+        for character in "/(/".chars() {
+            app.append_search_char(character);
+        }
+        app.confirm_search();
+
+        assert_eq!(app.visible_count(), 0);
+        assert!(app.search_error().is_some());
+        assert!(app.selected().is_none());
     }
 
     #[test]
