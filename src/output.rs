@@ -9,6 +9,8 @@ use tempfile::{Builder, TempPath};
 use crate::cli::DiffMode;
 use crate::compare::FunctionComparison;
 
+const MAX_TEMP_FUNCTION_COMPONENT_LEN: usize = 160;
+
 pub(crate) struct PreparedComparison {
     pub(crate) comparison: FunctionComparison,
     pub(crate) diff1_path: TempPath,
@@ -21,11 +23,7 @@ pub(crate) struct ComparisonTableRow {
 
 pub(crate) fn prepare_comparisons(
     comparisons: Vec<FunctionComparison>,
-    binary1: &Path,
-    binary2: &Path,
 ) -> Result<Vec<PreparedComparison>> {
-    let [label1, label2] = temp_file_labels(binary1, binary2);
-
     comparisons
         .into_iter()
         .map(|comparison| {
@@ -33,12 +31,14 @@ pub(crate) fn prepare_comparisons(
                 || format!("missing function: {}\n", comparison.name),
                 |function| function.rendered.clone(),
             );
-            let diff1_path = write_temp_disassembly(&diff1_contents, &label1)?;
+            let diff1_path =
+                write_temp_disassembly(&diff1_contents, &comparison.name, "a")?;
             let diff2_contents = comparison.function2.as_ref().map_or_else(
                 || format!("missing function: {}\n", comparison.name),
                 |function| function.rendered.clone(),
             );
-            let diff2_path = write_temp_disassembly(&diff2_contents, &label2)?;
+            let diff2_path =
+                write_temp_disassembly(&diff2_contents, &comparison.name, "b")?;
 
             Ok(PreparedComparison {
                 comparison,
@@ -49,28 +49,13 @@ pub(crate) fn prepare_comparisons(
         .collect()
 }
 
-pub(crate) fn temp_file_labels(binary1: &Path, binary2: &Path) -> [String; 2] {
-    let basename1 = binary1.file_name().map_or_else(
-        || "binary1".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let basename2 = binary2.file_name().map_or_else(
-        || "binary2".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-
-    if basename1 == basename2 {
-        [format!("LEFT-{basename1}"), format!("RIGHT-{basename2}")]
-    } else {
-        [basename1, basename2]
-    }
-}
-
 pub(crate) fn write_temp_disassembly(
     contents: &str,
-    label: &str,
+    function_name: &str,
+    side: &str,
 ) -> Result<TempPath> {
-    let prefix = format!("cgdiff-{label}-");
+    let function_name = temp_function_component(function_name);
+    let prefix = format!("cgdiff-{function_name}.{side}.");
     let mut file = Builder::new()
         .prefix(&prefix)
         .suffix(".s")
@@ -79,6 +64,34 @@ pub(crate) fn write_temp_disassembly(
     file.write_all(contents.as_bytes())
         .context("failed to write temp disassembly file")?;
     Ok(file.into_temp_path())
+}
+
+pub(crate) fn temp_function_component(function_name: &str) -> String {
+    let mut component = String::new();
+    let mut last_was_replacement = false;
+
+    for character in function_name.chars() {
+        if component.len() >= MAX_TEMP_FUNCTION_COMPONENT_LEN {
+            break;
+        }
+
+        if character.is_ascii_alphanumeric()
+            || matches!(character, '.' | '-' | '_')
+        {
+            component.push(character);
+            last_was_replacement = false;
+        } else if !last_was_replacement && !component.is_empty() {
+            component.push('_');
+            last_was_replacement = true;
+        }
+    }
+
+    let component = component.trim_matches(['.', '_', '-']).to_owned();
+    if component.is_empty() {
+        "function".to_owned()
+    } else {
+        component
+    }
 }
 
 pub(crate) fn sort_comparisons(

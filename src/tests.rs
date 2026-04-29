@@ -15,7 +15,7 @@ use crate::disassembly::{
 use crate::filter::SearchFilter;
 use crate::output::{
     PreparedComparison, dump_comparison_diff, dump_comparisons,
-    temp_file_labels, write_temp_disassembly,
+    temp_function_component, write_temp_disassembly,
 };
 use crate::tui::App;
 use std::collections::HashMap;
@@ -949,10 +949,18 @@ fn prepared_comparison(name: &str, combined_score: f64) -> PreparedComparison {
             count_score: combined_score,
             order_score: combined_score,
         },
-        diff1_path: write_temp_disassembly(&format!("{name}-left\n"), "left")
-            .expect("failed to create left temp file"),
-        diff2_path: write_temp_disassembly(&format!("{name}-right\n"), "right")
-            .expect("failed to create right temp file"),
+        diff1_path: write_temp_disassembly(
+            &format!("{name}-left\n"),
+            name,
+            "a",
+        )
+        .expect("failed to create left temp file"),
+        diff2_path: write_temp_disassembly(
+            &format!("{name}-right\n"),
+            name,
+            "b",
+        )
+        .expect("failed to create right temp file"),
     }
 }
 
@@ -968,32 +976,20 @@ fn temp_elf_binary(machine: u16) -> NamedTempFile {
 }
 
 #[test]
-fn temp_labels_use_distinct_basenames_when_available() {
-    let labels =
-        temp_file_labels(Path::new("/tmp/old.so"), Path::new("/tmp/new.so"));
-
-    assert_eq!(labels, ["old.so".to_owned(), "new.so".to_owned()]);
-}
-
-#[test]
-fn temp_labels_add_side_markers_when_basenames_match() {
-    let labels = temp_file_labels(
-        Path::new("/tmp/old/foo.so"),
-        Path::new("/tmp/new/foo.so"),
-    );
-
-    assert_eq!(
-        labels,
-        ["LEFT-foo.so".to_owned(), "RIGHT-foo.so".to_owned()]
-    );
-}
-
-#[test]
-fn temp_disassembly_path_includes_label_prefix() {
-    let temp_path =
-        write_temp_disassembly("mov\n", "LEFT-foo.so").expect("temp file");
+fn temp_disassembly_path_includes_function_and_side_prefix() {
+    let temp_path = write_temp_disassembly("mov\n", "foo::bar/baz", "a")
+        .expect("temp file");
     let path = temp_path.display().to_string();
 
-    assert!(path.contains("cgdiff-LEFT-foo.so-"));
+    assert!(path.contains("cgdiff-foo_bar_baz.a."));
     assert_eq!(temp_path.extension(), Some(std::ffi::OsStr::new("s")));
+}
+
+#[test]
+fn temp_function_component_sanitizes_symbol_names() {
+    assert_eq!(
+        temp_function_component("std::foo/bar::<T>"),
+        "std_foo_bar_T"
+    );
+    assert_eq!(temp_function_component("::::"), "function");
 }

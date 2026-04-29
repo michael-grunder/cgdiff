@@ -88,8 +88,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let prepared =
-        prepare_comparisons(comparisons, &cli.binary1, &cli.binary2)?;
+    let prepared = prepare_comparisons(comparisons)?;
     run_tui(
         prepared,
         cli.diff_mode,
