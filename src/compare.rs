@@ -22,12 +22,18 @@ pub(crate) fn build_comparisons(
     analysis_two: &BinaryAnalysis,
     include_unique_functions: bool,
     include_identical_functions: bool,
+    filter_out: Option<&SearchFilter>,
     filter: Option<&SearchFilter>,
 ) -> Vec<FunctionComparison> {
     let names = analysis_one
         .functions
         .keys()
         .chain(analysis_two.functions.keys())
+        .filter(|name| {
+            filter_out.is_none_or(|filter_out| {
+                filter_out.is_empty() || !filter_out.matches(name)
+            })
+        })
         .filter(|name| filter.is_none_or(|filter| filter.matches(name)))
         .cloned()
         .collect::<BTreeSet<_>>();

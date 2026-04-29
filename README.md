@@ -20,7 +20,8 @@ available for scripts or quick checks.
 - Opens the selected function pair in a configured diff editor.
 - Normalizes unstable disassembly details, including instruction addresses,
   local branch targets, symbol call targets, and RIP-relative data references.
-- Supports case-insensitive substring filtering and `/regex/` filtering.
+- Supports case-insensitive substring filtering, filter-out, and `/regex/`
+  filtering.
 - Provides `--stdio` output for non-interactive use.
 - Embeds build metadata in `--version`, including build date and git SHA.
 
@@ -81,6 +82,7 @@ Filter functions before comparison:
 ```bash
 cgdiff --filter relay ./old/app ./new/app
 cgdiff --filter '/^relay|worker/' ./old/app ./new/app
+cgdiff --filter-out '/.*\.cold/' --filter '/^relay/' ./old/app ./new/app
 ```
 
 Show functions that are hidden by default:
@@ -105,6 +107,7 @@ Options:
       --include-unique-functions     Include functions only present in one binary
       --include-identical-functions  Include identical or perfect-score functions
       --filter <FILTER>              Pre-filter by substring or `/regex/`
+      --filter-out <FILTER_OUT>      Pre-filter out by substring or `/regex/`
       --stdio                        Dump a sorted table to stdout
   -h, --help                         Print help
   -V, --version                      Print version
@@ -115,6 +118,7 @@ Options:
 - `j` / `Down`: select next function.
 - `k` / `Up`: select previous function.
 - `/`: filter visible functions by substring or `/regex/`.
+- `!`: filter out visible functions by substring or `/regex/`.
 - `1`: sort by combined score.
 - `2`: sort by instruction-count score.
 - `3`: sort by instruction-order score.

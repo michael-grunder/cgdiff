@@ -33,8 +33,24 @@ enum Overlay {
     Info,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SearchMode {
+    Include,
+    Exclude,
+}
+
+impl SearchMode {
+    const fn prompt(self) -> char {
+        match self {
+            Self::Include => '/',
+            Self::Exclude => '!',
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SearchState {
+    mode: SearchMode,
     buffer: String,
     previous_query: String,
 }
@@ -47,6 +63,8 @@ pub(crate) struct App {
     overlay: Option<Overlay>,
     include_unique_functions: bool,
     include_identical_functions: bool,
+    pub(crate) filter_out_query: String,
+    filter_out: SearchFilter,
     pub(crate) search_query: String,
     search_filter: SearchFilter,
     search_state: Option<SearchState>,
@@ -58,6 +76,7 @@ impl App {
         diff_mode: DiffMode,
         include_unique_functions: bool,
         include_identical_functions: bool,
+        initial_filter_out_query: String,
         initial_search_query: String,
     ) -> Self {
         sort_comparisons(&mut items, diff_mode);
@@ -70,6 +89,8 @@ impl App {
             overlay: None,
             include_unique_functions,
             include_identical_functions,
+            filter_out_query: initial_filter_out_query,
+            filter_out: SearchFilter::Empty,
             search_query: initial_search_query,
             search_filter: SearchFilter::Empty,
             search_state: None,
@@ -147,9 +168,22 @@ impl App {
     }
 
     pub(crate) fn start_search(&mut self) {
+        self.start_filter_edit(SearchMode::Include);
+    }
+
+    pub(crate) fn start_filter_out(&mut self) {
+        self.start_filter_edit(SearchMode::Exclude);
+    }
+
+    fn start_filter_edit(&mut self, mode: SearchMode) {
+        let query = match mode {
+            SearchMode::Include => &self.search_query,
+            SearchMode::Exclude => &self.filter_out_query,
+        };
         self.search_state = Some(SearchState {
-            buffer: self.search_query.clone(),
-            previous_query: self.search_query.clone(),
+            mode,
+            buffer: query.clone(),
+            previous_query: query.clone(),
         });
     }
 
@@ -175,7 +209,14 @@ impl App {
         let selected_name =
             self.selected().map(|item| item.comparison.name.clone());
         if let Some(state) = &self.search_state {
-            self.search_query = state.buffer.clone();
+            match state.mode {
+                SearchMode::Include => {
+                    self.search_query = state.buffer.clone();
+                }
+                SearchMode::Exclude => {
+                    self.filter_out_query = state.buffer.clone();
+                }
+            }
         }
         self.rebuild_filter(selected_name.as_deref());
     }
@@ -186,7 +227,14 @@ impl App {
 
     pub(crate) fn cancel_search(&mut self) {
         if let Some(state) = self.search_state.take() {
-            self.search_query = state.previous_query;
+            match state.mode {
+                SearchMode::Include => {
+                    self.search_query = state.previous_query;
+                }
+                SearchMode::Exclude => {
+                    self.filter_out_query = state.previous_query;
+                }
+            }
             self.rebuild_filter(None);
         }
     }
@@ -202,8 +250,18 @@ impl App {
         )
     }
 
+    fn search_prompt_prefix(&self) -> char {
+        self.search_state
+            .as_ref()
+            .map_or('/', |state| state.mode.prompt())
+    }
+
     pub(crate) const fn search_error(&self) -> Option<&str> {
-        self.search_filter.error_message()
+        if let Some(message) = self.filter_out.error_message() {
+            Some(message)
+        } else {
+            self.search_filter.error_message()
+        }
     }
 
     pub(crate) const fn visible_count(&self) -> usize {
@@ -211,13 +269,16 @@ impl App {
     }
 
     pub(crate) fn rebuild_filter(&mut self, selected_name: Option<&str>) {
+        self.filter_out = SearchFilter::compile(&self.filter_out_query);
         self.search_filter = SearchFilter::compile(&self.search_query);
         self.filtered_indices = self
             .items
             .iter()
             .enumerate()
             .filter(|(_, item)| {
-                self.search_filter.matches(&item.comparison.name)
+                let name = &item.comparison.name;
+                (self.filter_out.is_empty() || !self.filter_out.matches(name))
+                    && self.search_filter.matches(name)
             })
             .map(|(index, _)| index)
             .collect();
@@ -237,6 +298,7 @@ pub(crate) fn run_tui(
     diff_mode: DiffMode,
     include_unique_functions: bool,
     include_identical_functions: bool,
+    initial_filter_out_query: &str,
     initial_search_query: &str,
     editor: &str,
 ) -> Result<()> {
@@ -246,6 +308,7 @@ pub(crate) fn run_tui(
         diff_mode,
         include_unique_functions,
         include_identical_functions,
+        initial_filter_out_query.to_owned(),
         initial_search_query.to_owned(),
     );
 
@@ -288,6 +351,7 @@ pub(crate) fn run_tui(
                                 app.toggle_details();
                             }
                             KeyCode::Char('/') => app.start_search(),
+                            KeyCode::Char('!') => app.start_filter_out(),
                             KeyCode::Char('?') => app.toggle_help(),
                             KeyCode::Enter => {
                                 if let Some(selection) = app.selected() {
@@ -379,6 +443,15 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     "shown"
                 } else {
                     "hidden"
+                }
+            )),
+            Span::raw("  "),
+            Span::raw(format!(
+                "filter-out: {}",
+                if app.filter_out_query.is_empty() {
+                    "(none)"
+                } else {
+                    app.filter_out_query.as_str()
                 }
             )),
             Span::raw("  "),
@@ -536,7 +609,8 @@ fn draw_details_popup(
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let footer_text = if app.is_searching() {
         let mut footer = format!(
-            "/{}  Enter apply  Esc cancel  Backspace delete  matches: {}",
+            "{}{}  Enter apply  Esc cancel  Backspace delete  matches: {}",
+            app.search_prompt_prefix(),
             app.search_prompt(),
             app.visible_count()
         );
@@ -547,7 +621,7 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         footer
     } else {
         format!(
-            "j/k or arrows move  / filter  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
+            "j/k or arrows move  / filter  ! filter out  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
             app.items.len()
         )
     };
@@ -564,6 +638,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("j / Down: next function"),
         Line::from("k / Up: previous function"),
         Line::from("/: filter by substring or /regex/"),
+        Line::from("!: filter out by substring or /regex/"),
         Line::from("1: sort by combined score"),
         Line::from("2: sort by count score"),
         Line::from("3: sort by ops score"),

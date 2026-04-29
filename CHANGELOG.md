@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added AArch64-aware disassembly invocation and branch normalization.
 - Added release binary builds for Linux x86-64 musl, Linux AArch64 musl, and
   macOS AArch64.
+- Added `--filter-out` and TUI `!` filter-out support, which can be combined
+  with normal filters.
 
 ### Documentation
 

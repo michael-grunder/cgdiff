@@ -121,6 +121,10 @@ impl SearchFilter {
         }
     }
 
+    pub(crate) const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
     pub(crate) const fn error_message(&self) -> Option<&str> {
         match self {
             Self::InvalidRegex { message } => Some(message.as_str()),
@@ -131,6 +135,7 @@ impl SearchFilter {
 
 pub(crate) fn compile_cli_filter(
     query: Option<&str>,
+    argument_name: &str,
 ) -> Result<Option<SearchFilter>> {
     let Some(query) = query else {
         return Ok(None);
@@ -138,7 +143,7 @@ pub(crate) fn compile_cli_filter(
 
     let filter = SearchFilter::compile(query);
     if let Some(error) = filter.error_message() {
-        bail!("invalid --filter value {query:?}: {error}");
+        bail!("invalid {argument_name} value {query:?}: {error}");
     }
 
     Ok(Some(filter))

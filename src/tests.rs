@@ -454,6 +454,7 @@ fn filters_visible_items_case_insensitively() {
         false,
         false,
         String::new(),
+        String::new(),
     );
 
     app.start_search();
@@ -485,6 +486,7 @@ fn filters_visible_items_with_regex() {
         false,
         false,
         String::new(),
+        String::new(),
     );
 
     app.start_search();
@@ -501,6 +503,37 @@ fn filters_visible_items_with_regex() {
 }
 
 #[test]
+fn filters_out_visible_items_before_filtering_in_tui() {
+    let mut app = App::new(
+        vec![
+            prepared_comparison("relay_one", 0.1),
+            prepared_comparison("relay_one.cold", 0.2),
+            prepared_comparison("other", 0.3),
+        ],
+        DiffMode::Combined,
+        false,
+        false,
+        String::new(),
+        String::new(),
+    );
+
+    app.start_filter_out();
+    for character in "/.*\\.cold/".chars() {
+        app.append_search_char(character);
+    }
+    app.confirm_search();
+
+    app.start_search();
+    for character in "/^relay/".chars() {
+        app.append_search_char(character);
+    }
+    app.confirm_search();
+
+    assert_eq!(visible_names(&app), vec!["relay_one".to_owned()]);
+    assert!(app.search_error().is_none());
+}
+
+#[test]
 fn invalid_regex_yields_no_matches_and_error() {
     let mut app = App::new(
         vec![
@@ -510,6 +543,7 @@ fn invalid_regex_yields_no_matches_and_error() {
         DiffMode::Combined,
         false,
         false,
+        String::new(),
         String::new(),
     );
 
@@ -535,6 +569,7 @@ fn cancel_search_restores_previous_filter() {
         DiffMode::Combined,
         false,
         false,
+        String::new(),
         String::new(),
     );
 
@@ -600,6 +635,7 @@ fn app_applies_initial_filter() {
         DiffMode::Combined,
         false,
         false,
+        String::new(),
         "relay".to_owned(),
     );
 
@@ -635,6 +671,7 @@ fn build_comparisons_pre_filters_names() {
         &analysis_two,
         true,
         true,
+        None,
         Some(&filter),
     );
 
@@ -644,6 +681,39 @@ fn build_comparisons_pre_filters_names() {
             .map(|comparison| comparison.name.as_str())
             .collect::<Vec<_>>(),
         vec!["AlphaRelay", "relay_worker"]
+    );
+}
+
+#[test]
+fn build_comparisons_filters_out_names_before_filtering_names() {
+    let analysis_one = BinaryAnalysis {
+        functions: HashMap::from([
+            ("relay_hot".to_owned(), synthetic_function()),
+            ("relay_hot.cold".to_owned(), synthetic_function()),
+            ("other".to_owned(), synthetic_function()),
+        ]),
+    };
+    let analysis_two = BinaryAnalysis {
+        functions: HashMap::new(),
+    };
+    let filter_out = SearchFilter::compile("/.*\\.cold/");
+    let filter = SearchFilter::compile("/^relay/");
+
+    let comparisons = build_comparisons(
+        &analysis_one,
+        &analysis_two,
+        true,
+        true,
+        Some(&filter_out),
+        Some(&filter),
+    );
+
+    assert_eq!(
+        comparisons
+            .iter()
+            .map(|comparison| comparison.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["relay_hot"]
     );
 }
 
@@ -676,10 +746,22 @@ fn build_comparisons_hides_perfect_similarity_by_default() {
         )]),
     };
 
-    let hidden =
-        build_comparisons(&analysis_one, &analysis_two, false, false, None);
-    let shown =
-        build_comparisons(&analysis_one, &analysis_two, false, true, None);
+    let hidden = build_comparisons(
+        &analysis_one,
+        &analysis_two,
+        false,
+        false,
+        None,
+        None,
+    );
+    let shown = build_comparisons(
+        &analysis_one,
+        &analysis_two,
+        false,
+        true,
+        None,
+        None,
+    );
 
     assert!(hidden.is_empty());
     assert_eq!(shown.len(), 1);

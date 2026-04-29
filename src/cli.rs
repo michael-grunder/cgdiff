@@ -42,6 +42,9 @@ pub(crate) struct Cli {
     /// Pre-filter functions by case-insensitive substring or `/regex/`.
     #[arg(long = "filter")]
     pub(crate) filter: Option<String>,
+    /// Pre-filter out functions by case-insensitive substring or `/regex/`.
+    #[arg(long = "filter-out")]
+    pub(crate) filter_out: Option<String>,
     /// Dump the sorted comparison table to stdout instead of opening the TUI.
     #[arg(long = "stdio")]
     pub(crate) stdio: bool,
