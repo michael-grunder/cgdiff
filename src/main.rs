@@ -25,7 +25,9 @@ use crate::cli::Cli;
 use crate::compare::build_comparisons;
 use crate::disassembly::{BinaryAnalysis, analyze_binary};
 use crate::filter::compile_cli_filter;
-use crate::output::{dump_comparisons, prepare_comparisons};
+use crate::output::{
+    dump_comparison_diff, dump_comparisons, prepare_comparisons,
+};
 use crate::progress::render_progress;
 use crate::tui::run_tui;
 
@@ -73,7 +75,17 @@ fn main() -> Result<()> {
         filter.as_ref(),
     );
     if cli.stdio {
-        dump_comparisons(io::stdout(), &comparisons, cli.diff_mode)?;
+        if cli.diff {
+            dump_comparison_diff(
+                io::stdout(),
+                &comparisons,
+                cli.diff_mode,
+                &cli.binary1,
+                &cli.binary2,
+            )?;
+        } else {
+            dump_comparisons(io::stdout(), &comparisons, cli.diff_mode)?;
+        }
         return Ok(());
     }
 

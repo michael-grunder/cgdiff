@@ -14,8 +14,8 @@ use crate::disassembly::{
 };
 use crate::filter::SearchFilter;
 use crate::output::{
-    PreparedComparison, dump_comparisons, temp_file_labels,
-    write_temp_disassembly,
+    PreparedComparison, dump_comparison_diff, dump_comparisons,
+    temp_file_labels, write_temp_disassembly,
 };
 use crate::tui::App;
 use std::collections::HashMap;
@@ -625,6 +625,72 @@ fn dumps_sorted_stdio_table() {
 }
 
 #[test]
+fn dumps_sorted_stdio_diff() {
+    let comparisons = vec![
+        comparison_for_stdio_with_rendered(
+            "beta",
+            0.4,
+            "<beta>:\n    mov\n",
+            "<beta>:\n    mov\n",
+        ),
+        comparison_for_stdio_with_rendered(
+            "alpha",
+            0.1,
+            "<alpha>:\n    mov\n",
+            "<alpha>:\n    xor\n",
+        ),
+    ];
+    let mut output = Vec::new();
+
+    dump_comparison_diff(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        Path::new("/tmp/old.so"),
+        Path::new("/tmp/new.so"),
+    )
+    .expect("failed to dump diff");
+
+    let rendered = String::from_utf8(output).expect("expected utf-8");
+
+    assert!(rendered.starts_with(
+        "diff --git a/tmp/old.so b/tmp/new.so\n--- a/tmp/old.so\n+++ b/tmp/new.so\n"
+    ));
+    assert!(rendered.contains("@@ -1,4 +1,4 @@\n"));
+    assert!(rendered.contains(" <alpha>:\n"));
+    assert!(rendered.contains("-    mov\n"));
+    assert!(rendered.contains("+    xor\n"));
+    assert!(rendered.contains(" <beta>:\n"));
+}
+
+#[test]
+fn stdio_diff_mentions_missing_unique_functions() {
+    let comparisons = vec![comparison_for_stdio(
+        "only_left",
+        0.0,
+        0.0,
+        0.0,
+        true,
+        false,
+    )];
+    let mut output = Vec::new();
+
+    dump_comparison_diff(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        Path::new("old.so"),
+        Path::new("new.so"),
+    )
+    .expect("failed to dump diff");
+
+    let rendered = String::from_utf8(output).expect("expected utf-8");
+
+    assert!(rendered.contains("-mov\n"));
+    assert!(rendered.contains("+missing right function: only_left\n"));
+}
+
+#[test]
 fn app_applies_initial_filter() {
     let app = App::new(
         vec![
@@ -792,6 +858,33 @@ fn comparison_for_stdio(
         count_score,
         order_score,
     }
+}
+
+fn comparison_for_stdio_with_rendered(
+    name: &str,
+    combined_score: f64,
+    left_rendered: &str,
+    right_rendered: &str,
+) -> FunctionComparison {
+    let mut comparison = comparison_for_stdio(
+        name,
+        combined_score,
+        combined_score,
+        combined_score,
+        true,
+        true,
+    );
+    comparison
+        .function1
+        .as_mut()
+        .expect("left function should exist")
+        .rendered = left_rendered.to_owned();
+    comparison
+        .function2
+        .as_mut()
+        .expect("right function should exist")
+        .rendered = right_rendered.to_owned();
+    comparison
 }
 
 fn synthetic_function() -> FunctionDisassembly {

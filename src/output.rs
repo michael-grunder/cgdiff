@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::Path;
 
@@ -217,6 +218,196 @@ pub(crate) fn dump_comparisons(
     Ok(())
 }
 
+pub(crate) fn dump_comparison_diff(
+    mut writer: impl Write,
+    comparisons: &[FunctionComparison],
+    diff_mode: DiffMode,
+    binary1: &Path,
+    binary2: &Path,
+) -> Result<()> {
+    let mut sorted = comparisons.to_vec();
+    sort_function_comparisons(&mut sorted, diff_mode);
+
+    let left = aggregate_rendered_functions(
+        &sorted,
+        ComparisonSide::Left,
+        SideLabel::Left,
+    );
+    let right = aggregate_rendered_functions(
+        &sorted,
+        ComparisonSide::Right,
+        SideLabel::Right,
+    );
+    write_unified_diff(&mut writer, binary1, binary2, &left, &right)
+}
+
 const fn yes_or_no(present: bool) -> &'static str {
     if present { "yes" } else { "no" }
+}
+
+#[derive(Clone, Copy)]
+enum ComparisonSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy)]
+enum SideLabel {
+    Left,
+    Right,
+}
+
+fn aggregate_rendered_functions(
+    comparisons: &[FunctionComparison],
+    side: ComparisonSide,
+    missing_side: SideLabel,
+) -> String {
+    let mut output = String::new();
+    for comparison in comparisons {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+
+        let rendered = match side {
+            ComparisonSide::Left => comparison
+                .function1
+                .as_ref()
+                .map(|function| function.rendered.as_str()),
+            ComparisonSide::Right => comparison
+                .function2
+                .as_ref()
+                .map(|function| function.rendered.as_str()),
+        };
+
+        if let Some(rendered) = rendered {
+            output.push_str(rendered);
+        } else {
+            writeln!(
+                output,
+                "missing {} function: {}",
+                missing_side.label(),
+                comparison.name
+            )
+            .expect("writing to string should not fail");
+        }
+    }
+
+    output
+}
+
+impl SideLabel {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
+
+fn write_unified_diff(
+    writer: &mut impl Write,
+    binary1: &Path,
+    binary2: &Path,
+    left: &str,
+    right: &str,
+) -> Result<()> {
+    if left == right {
+        return Ok(());
+    }
+
+    let left_path = diff_path("a", binary1);
+    let right_path = diff_path("b", binary2);
+    let left_lines = split_diff_lines(left);
+    let right_lines = split_diff_lines(right);
+
+    writeln!(writer, "diff --git {left_path} {right_path}")?;
+    writeln!(writer, "--- {left_path}")?;
+    writeln!(writer, "+++ {right_path}")?;
+    writeln!(
+        writer,
+        "@@ -{} +{} @@",
+        unified_range(left_lines.len()),
+        unified_range(right_lines.len())
+    )?;
+
+    for line in diff_lines(&left_lines, &right_lines) {
+        match line {
+            DiffLine::Context(text) => writeln!(writer, " {text}")?,
+            DiffLine::Delete(text) => writeln!(writer, "-{text}")?,
+            DiffLine::Insert(text) => writeln!(writer, "+{text}")?,
+        }
+    }
+
+    Ok(())
+}
+
+fn diff_path(prefix: &str, path: &Path) -> String {
+    let path = path.display().to_string();
+    format!("{prefix}/{}", path.trim_start_matches('/'))
+}
+
+fn unified_range(line_count: usize) -> String {
+    if line_count == 0 {
+        "0,0".to_owned()
+    } else if line_count == 1 {
+        "1".to_owned()
+    } else {
+        format!("1,{line_count}")
+    }
+}
+
+fn split_diff_lines(contents: &str) -> Vec<&str> {
+    contents.lines().collect()
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum DiffLine<'a> {
+    Context(&'a str),
+    Delete(&'a str),
+    Insert(&'a str),
+}
+
+fn diff_lines<'a>(left: &[&'a str], right: &[&'a str]) -> Vec<DiffLine<'a>> {
+    let rows = left.len() + 1;
+    let columns = right.len() + 1;
+    let mut lcs_lengths = vec![0; rows * columns];
+
+    for left_index in (0..left.len()).rev() {
+        for right_index in (0..right.len()).rev() {
+            let cell = left_index * columns + right_index;
+            lcs_lengths[cell] = if left[left_index] == right[right_index] {
+                lcs_lengths[(left_index + 1) * columns + right_index + 1] + 1
+            } else {
+                lcs_lengths[(left_index + 1) * columns + right_index]
+                    .max(lcs_lengths[left_index * columns + right_index + 1])
+            };
+        }
+    }
+
+    let mut output = Vec::new();
+    let mut left_index = 0;
+    let mut right_index = 0;
+    while left_index < left.len() && right_index < right.len() {
+        if left[left_index] == right[right_index] {
+            output.push(DiffLine::Context(left[left_index]));
+            left_index += 1;
+            right_index += 1;
+        } else if lcs_lengths[(left_index + 1) * columns + right_index]
+            >= lcs_lengths[left_index * columns + right_index + 1]
+        {
+            output.push(DiffLine::Delete(left[left_index]));
+            left_index += 1;
+        } else {
+            output.push(DiffLine::Insert(right[right_index]));
+            right_index += 1;
+        }
+    }
+    output.extend(left[left_index..].iter().map(|line| DiffLine::Delete(line)));
+    output.extend(
+        right[right_index..]
+            .iter()
+            .map(|line| DiffLine::Insert(line)),
+    );
+
+    output
 }

@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macOS AArch64.
 - Added `--filter-out` and TUI `!` filter-out support, which can be combined
   with normal filters.
+- Added `--stdio --diff` output for unified diffs of listed functions'
+  normalized disassembly.
 
 ### Documentation
 

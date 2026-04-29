@@ -22,7 +22,7 @@ available for scripts or quick checks.
   local branch targets, symbol call targets, and RIP-relative data references.
 - Supports case-insensitive substring filtering, filter-out, and `/regex/`
   filtering.
-- Provides `--stdio` output for non-interactive use.
+- Provides `--stdio` table and unified diff output for non-interactive use.
 - Embeds build metadata in `--version`, including build date and git SHA.
 
 ## Requirements
@@ -77,6 +77,12 @@ Print a sorted table instead of opening the TUI:
 cgdiff --stdio ./old/app ./new/app
 ```
 
+Print a unified diff of the normalized disassembly for the sorted functions:
+
+```bash
+cgdiff --stdio --diff ./old/app ./new/app
+```
+
 Filter functions before comparison:
 
 ```bash
@@ -109,6 +115,7 @@ Options:
       --filter <FILTER>              Pre-filter by substring or `/regex/`
       --filter-out <FILTER_OUT>      Pre-filter out by substring or `/regex/`
       --stdio                        Dump a sorted table to stdout
+      --diff                         With --stdio, dump a unified diff instead
   -h, --help                         Print help
   -V, --version                      Print version
 ```

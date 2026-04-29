@@ -18,6 +18,7 @@ const VERSION: &str = concat!(
 pub(crate) const DEFAULT_EDITOR: &str = "nvim -d {file1} {file2}";
 #[derive(Clone, Debug, Parser)]
 #[command(version = VERSION, about = "Compare codegen between two binaries")]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Cli {
     /// First binary to compare.
     pub(crate) binary1: PathBuf,
@@ -48,6 +49,9 @@ pub(crate) struct Cli {
     /// Dump the sorted comparison table to stdout instead of opening the TUI.
     #[arg(long = "stdio")]
     pub(crate) stdio: bool,
+    /// With --stdio, dump a unified diff of listed functions instead of a table.
+    #[arg(long = "diff", requires = "stdio")]
+    pub(crate) diff: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
