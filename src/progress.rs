@@ -96,7 +96,7 @@ fn progress_target(use_stderr: bool) -> ProgressDrawTarget {
 fn progress_style() -> Result<ProgressStyle> {
     ProgressStyle::with_template(
         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
-         {bytes}/{total_bytes} {percent:>3}% {msg}",
+         {bytes}/{total_bytes}",
     )
     .context("failed to configure progress bar")
     .map(|style| style.progress_chars("=> "))

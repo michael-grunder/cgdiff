@@ -94,7 +94,7 @@ cgdiff --exclude '/.*\.cold/' --include '/^relay/' ./old/app ./new/app
 Show functions that are hidden by default:
 
 ```bash
-cgdiff --include-unique-functions --include-identical-functions ./old/app ./new/app
+cgdiff --include-unique --include-identical ./old/app ./new/app
 ```
 
 ## Options
@@ -110,8 +110,8 @@ Options:
   -o, --objdump <OBJDUMP>            Path to objdump program
   -e, --editor <EDITOR>              Command used to launch the diff editor
   -d, --diff-mode <DIFF_MODE>        Sort mode: combined, count, or order
-      --include-unique-functions     Include functions only present in one binary
-      --include-identical-functions  Include identical or perfect-score functions
+      --include-unique               Include functions only present in one binary
+      --include-identical            Include identical or perfect-score functions
       --include <INCLUDE>            Include by substring or `/regex/`
       --exclude <EXCLUDE>            Exclude by substring or `/regex/`
       --stdio                        Dump a sorted table to stdout

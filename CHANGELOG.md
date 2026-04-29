@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macOS AArch64.
 - Added `--exclude` and TUI `!` exclude support, which can be combined with
   `--include` and TUI `/` includes.
+- Added `--include-unique` and `--include-identical` aliases for showing
+  hidden function rows.
 - Added `--stdio --diff` output for unified diffs of listed functions'
   normalized disassembly.
 

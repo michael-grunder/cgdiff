@@ -34,11 +34,11 @@ pub(crate) struct Cli {
     #[arg(short = 'd', long = "diff-mode", default_value_t = DiffMode::Combined)]
     pub(crate) diff_mode: DiffMode,
     /// Include functions that only exist in one binary in the TUI.
-    #[arg(long = "include-unique-functions")]
+    #[arg(long = "include-unique", alias = "include-unique-functions")]
     pub(crate) include_unique_functions: bool,
     /// Include shared functions with identical instruction text or a perfect
     /// 1.000 similarity score in the TUI.
-    #[arg(long = "include-identical-functions")]
+    #[arg(long = "include-identical", alias = "include-identical-functions")]
     pub(crate) include_identical_functions: bool,
     /// Include functions by case-insensitive substring or `/regex/`.
     #[arg(long = "include")]

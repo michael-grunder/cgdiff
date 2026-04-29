@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::cli::DiffMode;
+use crate::cli::{Cli, DiffMode};
 use crate::compare::{
     FunctionComparison, build_comparisons, lcs_len, order_similarity,
     weighted_jaccard,
@@ -18,11 +18,42 @@ use crate::output::{
     temp_function_component, write_temp_disassembly,
 };
 use crate::tui::App;
+use clap::Parser;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
 use tempfile::NamedTempFile;
+
+#[test]
+fn parses_short_include_function_flags() {
+    let cli = Cli::try_parse_from([
+        "cgdiff",
+        "--include-unique",
+        "--include-identical",
+        "old",
+        "new",
+    ])
+    .expect("expected CLI arguments to parse");
+
+    assert!(cli.include_unique_functions);
+    assert!(cli.include_identical_functions);
+}
+
+#[test]
+fn parses_legacy_include_function_flags() {
+    let cli = Cli::try_parse_from([
+        "cgdiff",
+        "--include-unique-functions",
+        "--include-identical-functions",
+        "old",
+        "new",
+    ])
+    .expect("expected legacy CLI arguments to parse");
+
+    assert!(cli.include_unique_functions);
+    assert!(cli.include_identical_functions);
+}
 
 #[test]
 fn parses_function_headers() {
