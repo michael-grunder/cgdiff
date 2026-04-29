@@ -12,7 +12,6 @@ pub(crate) mod tui;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -59,8 +58,7 @@ fn main() -> Result<()> {
     });
     drop(progress_tx);
 
-    let mut states = HashMap::new();
-    render_progress(&progress_rx, &mut states, cli.stdio)?;
+    render_progress(&progress_rx, cli.stdio)?;
 
     let analysis_one = join_analysis(handle_one, "binary-1")?;
     let analysis_two = join_analysis(handle_two, "binary-2")?;

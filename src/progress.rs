@@ -1,12 +1,10 @@
 use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::io::{self, Write};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-const PROGRESS_RENDER_INTERVAL: Duration = Duration::from_millis(100);
+const PROGRESS_RENDER_HZ: u8 = 10;
 
 pub(crate) enum ProgressEvent {
     Started { label: String, total_bytes: u64 },
@@ -14,8 +12,8 @@ pub(crate) enum ProgressEvent {
     Finished { label: String },
 }
 
-#[derive(Debug)]
-pub(crate) struct ProgressState {
+#[derive(Debug, Default)]
+struct ProgressState {
     total_bytes: u64,
     processed_bytes: u64,
     completed: bool,
@@ -60,140 +58,89 @@ pub(crate) fn send_progress_finished(
 
 pub(crate) fn render_progress(
     progress_rx: &mpsc::Receiver<ProgressEvent>,
-    states: &mut HashMap<String, ProgressState>,
     use_stderr: bool,
 ) -> Result<()> {
-    let mut printed_line_count = 0;
-    let mut last_rendered_at = None;
+    let mut states = HashMap::new();
+    let progress_bar = ProgressBar::new(0);
+    progress_bar.set_draw_target(progress_target(use_stderr));
+    progress_bar.set_style(progress_style()?);
+    progress_bar.set_message("Processing binaries");
 
-    while let Ok(event) = progress_rx.recv_timeout(PROGRESS_RENDER_INTERVAL) {
-        let force_render = match event {
-            ProgressEvent::Started { label, total_bytes } => {
-                states.insert(
-                    label,
-                    ProgressState {
-                        total_bytes,
-                        processed_bytes: 0,
-                        completed: false,
-                    },
-                );
-                true
-            }
-            ProgressEvent::Processed { label, bytes } => {
-                if let Some(state) = states.get_mut(&label) {
-                    state.processed_bytes = bytes;
-                }
-                false
-            }
-            ProgressEvent::Finished { label } => {
-                if let Some(state) = states.get_mut(&label) {
-                    state.processed_bytes = state.total_bytes;
-                    state.completed = true;
-                }
-                true
-            }
-        };
-
-        let now = Instant::now();
-        if should_render_progress(last_rendered_at, force_render, now) {
-            printed_line_count =
-                print_progress(states, use_stderr, printed_line_count)?;
-            last_rendered_at = Some(now);
-        }
+    while let Ok(event) = progress_rx.recv() {
+        apply_progress_event(&mut states, event);
+        progress_bar.set_length(total_bytes(&states));
+        progress_bar.set_position(processed_bytes(&states));
     }
 
-    if !states.is_empty() {
-        print_progress(states, use_stderr, printed_line_count)?;
-        if use_stderr {
-            eprintln!();
-        } else {
-            println!();
-        }
+    if states.is_empty() {
+        progress_bar.finish_and_clear();
+    } else if all_binaries_completed(&states) {
+        progress_bar.set_length(total_bytes(&states));
+        progress_bar.set_position(total_bytes(&states));
+        progress_bar.finish_with_message("Processed binaries");
+    } else {
+        progress_bar.abandon_with_message("Stopped processing binaries");
     }
 
     Ok(())
 }
 
-fn should_render_progress(
-    last_rendered_at: Option<Instant>,
-    force_render: bool,
-    now: Instant,
-) -> bool {
-    force_render
-        || last_rendered_at.is_none_or(|last_rendered_at| {
-            now.duration_since(last_rendered_at) >= PROGRESS_RENDER_INTERVAL
-        })
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn progress_lines(states: &HashMap<String, ProgressState>) -> Vec<String> {
-    let mut labels = states.keys().collect::<Vec<_>>();
-    labels.sort_unstable();
-
-    labels
-        .into_iter()
-        .filter_map(|label| {
-            states.get(label).map(|state| {
-                let percentage = if state.total_bytes == 0 {
-                    100.0
-                } else {
-                    (state.processed_bytes as f64 / state.total_bytes as f64)
-                        * 100.0
-                };
-                format!(
-                    "{label}: {:>7}/{} bytes {:>5.1}%{}",
-                    state.processed_bytes,
-                    state.total_bytes,
-                    percentage.min(100.0),
-                    if state.completed { " done" } else { "" }
-                )
-            })
-        })
-        .collect::<Vec<_>>()
-}
-
-fn print_progress(
-    states: &HashMap<String, ProgressState>,
-    use_stderr: bool,
-    previous_line_count: usize,
-) -> Result<usize> {
-    let lines = progress_lines(states);
-    let rendered = render_progress_lines(&lines, previous_line_count);
-
+fn progress_target(use_stderr: bool) -> ProgressDrawTarget {
     if use_stderr {
-        eprint!("{rendered}");
-        io::stderr()
-            .flush()
-            .context("failed to flush progress output")?;
+        ProgressDrawTarget::stderr_with_hz(PROGRESS_RENDER_HZ)
     } else {
-        print!("{rendered}");
-        io::stdout()
-            .flush()
-            .context("failed to flush progress output")?;
+        ProgressDrawTarget::stdout_with_hz(PROGRESS_RENDER_HZ)
     }
-
-    Ok(lines.len())
 }
 
-fn render_progress_lines(
-    lines: &[String],
-    previous_line_count: usize,
-) -> String {
-    let mut output = String::new();
-    if previous_line_count > 1 {
-        write!(output, "\x1b[{}A", previous_line_count - 1)
-            .expect("writing to a string must not fail");
-    }
+fn progress_style() -> Result<ProgressStyle> {
+    ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
+         {bytes}/{total_bytes} {percent:>3}% {msg}",
+    )
+    .context("failed to configure progress bar")
+    .map(|style| style.progress_chars("=> "))
+}
 
-    for (index, line) in lines.iter().enumerate() {
-        if index > 0 {
-            output.push('\n');
+fn apply_progress_event(
+    states: &mut HashMap<String, ProgressState>,
+    event: ProgressEvent,
+) {
+    match event {
+        ProgressEvent::Started { label, total_bytes } => {
+            states.insert(
+                label,
+                ProgressState {
+                    total_bytes,
+                    processed_bytes: 0,
+                    completed: false,
+                },
+            );
         }
-        output.push_str("\r\x1b[2K");
-        output.push_str(line);
+        ProgressEvent::Processed { label, bytes } => {
+            if let Some(state) = states.get_mut(&label) {
+                state.processed_bytes = bytes.min(state.total_bytes);
+            }
+        }
+        ProgressEvent::Finished { label } => {
+            if let Some(state) = states.get_mut(&label) {
+                state.processed_bytes = state.total_bytes;
+                state.completed = true;
+            }
+        }
     }
+}
 
-    output
+fn total_bytes(states: &HashMap<String, ProgressState>) -> u64 {
+    states.values().map(|state| state.total_bytes).sum()
+}
+
+fn processed_bytes(states: &HashMap<String, ProgressState>) -> u64 {
+    states.values().map(|state| state.processed_bytes).sum()
+}
+
+fn all_binaries_completed(states: &HashMap<String, ProgressState>) -> bool {
+    states.values().all(|state| state.completed)
 }
 
 #[cfg(test)]
@@ -201,67 +148,91 @@ mod tests {
     use super::*;
 
     #[test]
-    fn progress_lines_render_each_binary_on_its_own_line() {
-        let states = HashMap::from([
-            (
-                "B /tmp/relay/ab/new.so".to_owned(),
-                ProgressState {
-                    total_bytes: 6_275_368,
-                    processed_bytes: 6_275_368,
-                    completed: true,
-                },
-            ),
-            (
-                "A /tmp/relay/ab/old.so".to_owned(),
-                ProgressState {
-                    total_bytes: 6_276_264,
-                    processed_bytes: 6_276_264,
-                    completed: true,
-                },
-            ),
-        ]);
+    fn started_events_expand_the_unified_progress_total() {
+        let mut states = HashMap::new();
 
-        assert_eq!(
-            progress_lines(&states),
-            vec![
-                "A /tmp/relay/ab/old.so: 6276264/6276264 bytes 100.0% done",
-                "B /tmp/relay/ab/new.so: 6275368/6275368 bytes 100.0% done",
-            ]
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Started {
+                label: "A old".to_owned(),
+                total_bytes: 10,
+            },
         );
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Started {
+                label: "B new".to_owned(),
+                total_bytes: 20,
+            },
+        );
+
+        assert_eq!(total_bytes(&states), 30);
+        assert_eq!(processed_bytes(&states), 0);
     }
 
     #[test]
-    fn repeated_progress_output_rewinds_to_the_first_status_line() {
-        let lines = vec![
-            "A old:       1/10 bytes  10.0%".to_owned(),
-            "B new:       2/20 bytes  10.0%".to_owned(),
-        ];
-
-        assert_eq!(
-            render_progress_lines(&lines, 2),
-            "\x1b[1A\r\x1b[2KA old:       1/10 bytes  10.0%\n\r\x1b[2KB new:       2/20 bytes  10.0%"
+    fn processed_events_update_the_unified_progress_position() {
+        let mut states = HashMap::new();
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Started {
+                label: "A old".to_owned(),
+                total_bytes: 10,
+            },
         );
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Started {
+                label: "B new".to_owned(),
+                total_bytes: 20,
+            },
+        );
+
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Processed {
+                label: "A old".to_owned(),
+                bytes: 6,
+            },
+        );
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Processed {
+                label: "B new".to_owned(),
+                bytes: 100,
+            },
+        );
+
+        assert_eq!(processed_bytes(&states), 26);
     }
 
     #[test]
-    fn processed_progress_renders_only_after_interval() {
-        let first_rendered_at = Instant::now();
+    fn finished_events_complete_that_binary_share_of_the_progress() {
+        let mut states = HashMap::new();
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Started {
+                label: "A old".to_owned(),
+                total_bytes: 10,
+            },
+        );
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Processed {
+                label: "A old".to_owned(),
+                bytes: 6,
+            },
+        );
 
-        assert!(should_render_progress(None, false, first_rendered_at));
-        assert!(!should_render_progress(
-            Some(first_rendered_at),
-            false,
-            first_rendered_at + (PROGRESS_RENDER_INTERVAL / 2),
-        ));
-        assert!(should_render_progress(
-            Some(first_rendered_at),
-            false,
-            first_rendered_at + PROGRESS_RENDER_INTERVAL,
-        ));
-        assert!(should_render_progress(
-            Some(first_rendered_at),
-            true,
-            first_rendered_at + (PROGRESS_RENDER_INTERVAL / 2),
-        ));
+        apply_progress_event(
+            &mut states,
+            ProgressEvent::Finished {
+                label: "A old".to_owned(),
+            },
+        );
+
+        assert_eq!(processed_bytes(&states), 10);
+        assert!(states["A old"].completed);
+        assert!(all_binaries_completed(&states));
     }
 }
