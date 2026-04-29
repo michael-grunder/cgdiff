@@ -63,10 +63,10 @@ pub(crate) struct App {
     overlay: Option<Overlay>,
     include_unique_functions: bool,
     include_identical_functions: bool,
-    pub(crate) filter_out_query: String,
-    filter_out: SearchFilter,
-    pub(crate) search_query: String,
-    search_filter: SearchFilter,
+    pub(crate) exclude_query: String,
+    exclude_filter: SearchFilter,
+    pub(crate) include_query: String,
+    include_filter: SearchFilter,
     search_state: Option<SearchState>,
 }
 
@@ -76,8 +76,8 @@ impl App {
         diff_mode: DiffMode,
         include_unique_functions: bool,
         include_identical_functions: bool,
-        initial_filter_out_query: String,
-        initial_search_query: String,
+        initial_exclude_query: String,
+        initial_include_query: String,
     ) -> Self {
         sort_comparisons(&mut items, diff_mode);
         let mut app = Self {
@@ -89,10 +89,10 @@ impl App {
             overlay: None,
             include_unique_functions,
             include_identical_functions,
-            filter_out_query: initial_filter_out_query,
-            filter_out: SearchFilter::Empty,
-            search_query: initial_search_query,
-            search_filter: SearchFilter::Empty,
+            exclude_query: initial_exclude_query,
+            exclude_filter: SearchFilter::Empty,
+            include_query: initial_include_query,
+            include_filter: SearchFilter::Empty,
             search_state: None,
         };
         app.rebuild_filter(None);
@@ -171,14 +171,14 @@ impl App {
         self.start_filter_edit(SearchMode::Include);
     }
 
-    pub(crate) fn start_filter_out(&mut self) {
+    pub(crate) fn start_exclude(&mut self) {
         self.start_filter_edit(SearchMode::Exclude);
     }
 
     fn start_filter_edit(&mut self, mode: SearchMode) {
         let query = match mode {
-            SearchMode::Include => &self.search_query,
-            SearchMode::Exclude => &self.filter_out_query,
+            SearchMode::Include => &self.include_query,
+            SearchMode::Exclude => &self.exclude_query,
         };
         self.search_state = Some(SearchState {
             mode,
@@ -211,10 +211,10 @@ impl App {
         if let Some(state) = &self.search_state {
             match state.mode {
                 SearchMode::Include => {
-                    self.search_query = state.buffer.clone();
+                    self.include_query = state.buffer.clone();
                 }
                 SearchMode::Exclude => {
-                    self.filter_out_query = state.buffer.clone();
+                    self.exclude_query = state.buffer.clone();
                 }
             }
         }
@@ -229,10 +229,10 @@ impl App {
         if let Some(state) = self.search_state.take() {
             match state.mode {
                 SearchMode::Include => {
-                    self.search_query = state.previous_query;
+                    self.include_query = state.previous_query;
                 }
                 SearchMode::Exclude => {
-                    self.filter_out_query = state.previous_query;
+                    self.exclude_query = state.previous_query;
                 }
             }
             self.rebuild_filter(None);
@@ -245,7 +245,7 @@ impl App {
 
     pub(crate) fn search_prompt(&self) -> String {
         self.search_state.as_ref().map_or_else(
-            || self.search_query.clone(),
+            || self.include_query.clone(),
             |state| state.buffer.clone(),
         )
     }
@@ -257,10 +257,10 @@ impl App {
     }
 
     pub(crate) const fn search_error(&self) -> Option<&str> {
-        if let Some(message) = self.filter_out.error_message() {
+        if let Some(message) = self.exclude_filter.error_message() {
             Some(message)
         } else {
-            self.search_filter.error_message()
+            self.include_filter.error_message()
         }
     }
 
@@ -269,16 +269,17 @@ impl App {
     }
 
     pub(crate) fn rebuild_filter(&mut self, selected_name: Option<&str>) {
-        self.filter_out = SearchFilter::compile(&self.filter_out_query);
-        self.search_filter = SearchFilter::compile(&self.search_query);
+        self.exclude_filter = SearchFilter::compile(&self.exclude_query);
+        self.include_filter = SearchFilter::compile(&self.include_query);
         self.filtered_indices = self
             .items
             .iter()
             .enumerate()
             .filter(|(_, item)| {
                 let name = &item.comparison.name;
-                (self.filter_out.is_empty() || !self.filter_out.matches(name))
-                    && self.search_filter.matches(name)
+                (self.exclude_filter.is_empty()
+                    || !self.exclude_filter.matches(name))
+                    && self.include_filter.matches(name)
             })
             .map(|(index, _)| index)
             .collect();
@@ -298,8 +299,8 @@ pub(crate) fn run_tui(
     diff_mode: DiffMode,
     include_unique_functions: bool,
     include_identical_functions: bool,
-    initial_filter_out_query: &str,
-    initial_search_query: &str,
+    initial_exclude_query: &str,
+    initial_include_query: &str,
     editor: &str,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
@@ -308,8 +309,8 @@ pub(crate) fn run_tui(
         diff_mode,
         include_unique_functions,
         include_identical_functions,
-        initial_filter_out_query.to_owned(),
-        initial_search_query.to_owned(),
+        initial_exclude_query.to_owned(),
+        initial_include_query.to_owned(),
     );
 
     loop {
@@ -351,7 +352,7 @@ pub(crate) fn run_tui(
                                 app.toggle_details();
                             }
                             KeyCode::Char('/') => app.start_search(),
-                            KeyCode::Char('!') => app.start_filter_out(),
+                            KeyCode::Char('!') => app.start_exclude(),
                             KeyCode::Char('?') => app.toggle_help(),
                             KeyCode::Enter => {
                                 if let Some(selection) = app.selected() {
@@ -447,20 +448,20 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             )),
             Span::raw("  "),
             Span::raw(format!(
-                "filter-out: {}",
-                if app.filter_out_query.is_empty() {
+                "exclude: {}",
+                if app.exclude_query.is_empty() {
                     "(none)"
                 } else {
-                    app.filter_out_query.as_str()
+                    app.exclude_query.as_str()
                 }
             )),
             Span::raw("  "),
             Span::raw(format!(
-                "filter: {}",
-                if app.search_query.is_empty() {
+                "include: {}",
+                if app.include_query.is_empty() {
                     "(none)"
                 } else {
-                    app.search_query.as_str()
+                    app.include_query.as_str()
                 }
             )),
         ]),
@@ -621,7 +622,7 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         footer
     } else {
         format!(
-            "j/k or arrows move  / filter  ! filter out  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
+            "j/k or arrows move  / include  ! exclude  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
             app.items.len()
         )
     };
@@ -637,8 +638,8 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("q / Esc: quit"),
         Line::from("j / Down: next function"),
         Line::from("k / Up: previous function"),
-        Line::from("/: filter by substring or /regex/"),
-        Line::from("!: filter out by substring or /regex/"),
+        Line::from("/: include by substring or /regex/"),
+        Line::from("!: exclude by substring or /regex/"),
         Line::from("1: sort by combined score"),
         Line::from("2: sort by count score"),
         Line::from("3: sort by ops score"),

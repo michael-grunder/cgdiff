@@ -40,12 +40,12 @@ pub(crate) struct Cli {
     /// 1.000 similarity score in the TUI.
     #[arg(long = "include-identical-functions")]
     pub(crate) include_identical_functions: bool,
-    /// Pre-filter functions by case-insensitive substring or `/regex/`.
-    #[arg(long = "filter")]
-    pub(crate) filter: Option<String>,
-    /// Pre-filter out functions by case-insensitive substring or `/regex/`.
-    #[arg(long = "filter-out")]
-    pub(crate) filter_out: Option<String>,
+    /// Include functions by case-insensitive substring or `/regex/`.
+    #[arg(long = "include")]
+    pub(crate) include: Option<String>,
+    /// Exclude functions by case-insensitive substring or `/regex/`.
+    #[arg(long = "exclude")]
+    pub(crate) exclude: Option<String>,
     /// Dump the sorted comparison table to stdout instead of opening the TUI.
     #[arg(long = "stdio")]
     pub(crate) stdio: bool,

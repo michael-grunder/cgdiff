@@ -517,7 +517,7 @@ fn filters_out_visible_items_before_filtering_in_tui() {
         String::new(),
     );
 
-    app.start_filter_out();
+    app.start_exclude();
     for character in "/.*\\.cold/".chars() {
         app.append_search_char(character);
     }
@@ -585,7 +585,7 @@ fn cancel_search_restores_previous_filter() {
 
     app.cancel_search();
 
-    assert_eq!(app.search_query, "relay");
+    assert_eq!(app.include_query, "relay");
     assert_eq!(app.visible_count(), 2);
     assert_eq!(
         visible_names(&app),
@@ -705,7 +705,7 @@ fn app_applies_initial_filter() {
         "relay".to_owned(),
     );
 
-    assert_eq!(app.search_query, "relay");
+    assert_eq!(app.include_query, "relay");
     assert_eq!(
         visible_names(&app),
         vec!["AlphaRelay".to_owned(), "relay_worker".to_owned()]
@@ -762,16 +762,16 @@ fn build_comparisons_filters_out_names_before_filtering_names() {
     let analysis_two = BinaryAnalysis {
         functions: HashMap::new(),
     };
-    let filter_out = SearchFilter::compile("/.*\\.cold/");
-    let filter = SearchFilter::compile("/^relay/");
+    let exclude = SearchFilter::compile("/.*\\.cold/");
+    let include = SearchFilter::compile("/^relay/");
 
     let comparisons = build_comparisons(
         &analysis_one,
         &analysis_two,
         true,
         true,
-        Some(&filter_out),
-        Some(&filter),
+        Some(&exclude),
+        Some(&include),
     );
 
     assert_eq!(

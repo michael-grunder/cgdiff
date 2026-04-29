@@ -33,9 +33,8 @@ use crate::tui::run_tui;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let filter = compile_cli_filter(cli.filter.as_deref(), "--filter")?;
-    let filter_out =
-        compile_cli_filter(cli.filter_out.as_deref(), "--filter-out")?;
+    let include = compile_cli_filter(cli.include.as_deref(), "--include")?;
+    let exclude = compile_cli_filter(cli.exclude.as_deref(), "--exclude")?;
     let objdump = select_objdump(cli.objdump.as_deref())?;
 
     let (progress_tx, progress_rx) = mpsc::channel();
@@ -71,8 +70,8 @@ fn main() -> Result<()> {
         &analysis_two,
         cli.include_unique_functions,
         cli.include_identical_functions,
-        filter_out.as_ref(),
-        filter.as_ref(),
+        exclude.as_ref(),
+        include.as_ref(),
     );
     if cli.stdio {
         if cli.diff {
@@ -96,8 +95,8 @@ fn main() -> Result<()> {
         cli.diff_mode,
         cli.include_unique_functions,
         cli.include_identical_functions,
-        cli.filter_out.as_deref().unwrap_or_default(),
-        cli.filter.as_deref().unwrap_or_default(),
+        cli.exclude.as_deref().unwrap_or_default(),
+        cli.include.as_deref().unwrap_or_default(),
         &cli.editor,
     )?;
 
