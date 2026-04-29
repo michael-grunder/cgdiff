@@ -110,7 +110,7 @@ impl App {
             .and_then(|index| self.items.get(*index))
     }
 
-    pub(crate) fn next(&mut self) {
+    pub(crate) const fn next(&mut self) {
         if self.filtered_indices.is_empty() {
             return;
         }
@@ -122,7 +122,7 @@ impl App {
         self.table_state.select(Some(next_index));
     }
 
-    pub(crate) fn previous(&mut self) {
+    pub(crate) const fn previous(&mut self) {
         if self.filtered_indices.is_empty() {
             return;
         }
