@@ -49,8 +49,8 @@ pub(crate) struct Cli {
     /// Dump the sorted comparison table to stdout instead of opening the TUI.
     #[arg(long = "stdio")]
     pub(crate) stdio: bool,
-    /// With --stdio, dump a unified diff of listed functions instead of a table.
-    #[arg(long = "diff", requires = "stdio")]
+    /// Dump a unified diff of listed functions instead of a table.
+    #[arg(long = "diff")]
     pub(crate) diff: bool,
 }
 

@@ -80,7 +80,7 @@ cgdiff --stdio ./old/app ./new/app
 Print a unified diff of the normalized disassembly for the sorted functions:
 
 ```bash
-cgdiff --stdio --diff ./old/app ./new/app
+cgdiff --diff ./old/app ./new/app
 ```
 
 Include or exclude functions before comparison:
@@ -134,7 +134,7 @@ Options:
       --include <INCLUDE>            Include by substring or `/regex/`
       --exclude <EXCLUDE>            Exclude by substring or `/regex/`
       --stdio                        Dump a sorted table to stdout
-      --diff                         With --stdio, dump a unified diff instead
+      --diff                         Dump a unified diff instead of a table
   -h, --help                         Print help
   -V, --version                      Print version
 ```

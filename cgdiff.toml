@@ -23,4 +23,4 @@
 # Supported colors:
 #   black, red, green, yellow, blue, magenta, cyan, gray, dark-gray, white
 #   light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan
-# highlight_color = "blue"
+highlight_color = "black"

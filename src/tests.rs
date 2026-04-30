@@ -57,6 +57,15 @@ fn parses_legacy_include_function_flags() {
 }
 
 #[test]
+fn parses_diff_without_stdio() {
+    let cli = Cli::try_parse_from(["cgdiff", "--diff", "old", "new"])
+        .expect("expected --diff to imply stdio mode at runtime");
+
+    assert!(cli.diff);
+    assert!(!cli.stdio);
+}
+
+#[test]
 fn parses_function_headers() {
     let name = parse_function_header("0000000000001139 <main>:")
         .expect("expected function name");

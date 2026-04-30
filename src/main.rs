@@ -34,6 +34,7 @@ use crate::tui::{TuiOptions, run_tui};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let stdio = cli.stdio || cli.diff;
     let config = Config::load()?;
     let include = compile_cli_filter(cli.include.as_deref(), "--include")?;
     let exclude = compile_cli_filter(cli.exclude.as_deref(), "--exclude")?;
@@ -70,7 +71,7 @@ fn main() -> Result<()> {
     });
     drop(progress_tx);
 
-    render_progress(&progress_rx, cli.stdio)?;
+    render_progress(&progress_rx, stdio)?;
 
     let analysis_one = join_analysis(handle_one, "binary-1")?;
     let analysis_two = join_analysis(handle_two, "binary-2")?;
@@ -83,7 +84,7 @@ fn main() -> Result<()> {
         exclude.as_ref(),
         include.as_ref(),
     );
-    if cli.stdio {
+    if stdio {
         if cli.diff {
             dump_comparison_diff(
                 io::stdout(),
