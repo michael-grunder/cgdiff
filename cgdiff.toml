@@ -1,0 +1,26 @@
+# Example cgdiff configuration.
+#
+# cgdiff looks for a TOML config file in:
+#
+#   $XDG_CONFIG_HOME/cgdiff.toml
+#   ~/.config/cgdiff.toml
+#
+# Command-line flags take precedence over values from this file.
+
+# Path to an objdump-compatible disassembler. If unset, cgdiff searches PATH
+# for llvm-objdump first, then objdump.
+# objdump = "/usr/bin/llvm-objdump"
+
+# Command used when pressing Enter in the TUI. The placeholders are replaced
+# with temporary files containing the rendered disassembly for each binary.
+# editor = "nvim -d {file1} {file2}"
+
+# Background color for the selected row in the TUI.
+#
+# The default is "blue". Set this to "none" or "off" to disable the background
+# highlight color while keeping the selection marker.
+#
+# Supported colors:
+#   black, red, green, yellow, blue, magenta, cyan, gray, dark-gray, white
+#   light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan
+# highlight_color = "blue"

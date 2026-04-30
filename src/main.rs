@@ -3,6 +3,7 @@
 
 pub(crate) mod cli;
 pub(crate) mod compare;
+pub(crate) mod config;
 pub(crate) mod disassembly;
 pub(crate) mod filter;
 pub(crate) mod output;
@@ -22,19 +23,30 @@ use clap::Parser;
 
 use crate::cli::Cli;
 use crate::compare::build_comparisons;
+use crate::config::{Config, HighlightColor};
 use crate::disassembly::{BinaryAnalysis, analyze_binary};
 use crate::filter::compile_cli_filter;
 use crate::output::{
     dump_comparison_diff, dump_comparisons, prepare_comparisons,
 };
 use crate::progress::render_progress;
-use crate::tui::run_tui;
+use crate::tui::{TuiOptions, run_tui};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config = Config::load()?;
     let include = compile_cli_filter(cli.include.as_deref(), "--include")?;
     let exclude = compile_cli_filter(cli.exclude.as_deref(), "--exclude")?;
-    let objdump = select_objdump(cli.objdump.as_deref())?;
+    let objdump =
+        select_objdump(cli.objdump.as_deref().or(config.objdump.as_deref()))?;
+    let editor = cli
+        .editor
+        .as_deref()
+        .or(config.editor.as_deref())
+        .unwrap_or(cli::DEFAULT_EDITOR);
+    let highlight_color = config
+        .highlight_color
+        .unwrap_or(HighlightColor::Color(ratatui::style::Color::Blue));
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let binary1 = cli.binary1.clone();
@@ -89,12 +101,15 @@ fn main() -> Result<()> {
     let prepared = prepare_comparisons(comparisons)?;
     run_tui(
         prepared,
-        cli.diff_mode,
-        cli.include_unique_functions,
-        cli.include_identical_functions,
-        cli.exclude.as_deref().unwrap_or_default(),
-        cli.include.as_deref().unwrap_or_default(),
-        &cli.editor,
+        TuiOptions {
+            diff_mode: cli.diff_mode,
+            include_unique_functions: cli.include_unique_functions,
+            include_identical_functions: cli.include_identical_functions,
+            initial_exclude_query: cli.exclude.as_deref().unwrap_or_default(),
+            initial_include_query: cli.include.as_deref().unwrap_or_default(),
+            editor,
+            highlight_color,
+        },
     )?;
 
     Ok(())

@@ -29,7 +29,7 @@ available for scripts or quick checks.
 
 - Rust 2024 toolchain.
 - `llvm-objdump` or `objdump` available in `PATH`, unless provided with
-  `--objdump`.
+  `--objdump` or configured in `~/.config/cgdiff.toml`.
 - A diff-capable editor for the interactive flow. The default command is
   `nvim -d {file1} {file2}`.
 
@@ -96,6 +96,25 @@ Show functions that are hidden by default:
 ```bash
 cgdiff --include-unique --include-identical ./old/app ./new/app
 ```
+
+## Configuration
+
+`cgdiff` reads the first config file it finds from:
+
+- `$XDG_CONFIG_HOME/cgdiff.toml`
+- `~/.config/cgdiff.toml`
+
+Command-line flags take precedence over config values.
+
+```toml
+objdump = "/usr/bin/llvm-objdump"
+editor = "vimdiff {file1} {file2}"
+highlight_color = "blue"
+```
+
+Set `highlight_color = "none"` to disable the TUI row highlight background.
+The repository includes a commented [`cgdiff.toml`](cgdiff.toml) example with
+the supported color names.
 
 ## Options
 

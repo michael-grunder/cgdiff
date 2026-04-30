@@ -28,8 +28,8 @@ pub(crate) struct Cli {
     #[arg(short = 'o', long = "objdump")]
     pub(crate) objdump: Option<PathBuf>,
     /// Command used to launch the diff editor.
-    #[arg(short = 'e', long = "editor", default_value = DEFAULT_EDITOR)]
-    pub(crate) editor: String,
+    #[arg(short = 'e', long = "editor")]
+    pub(crate) editor: Option<String>,
     /// Sort mode for similarity results.
     #[arg(short = 'd', long = "diff-mode", default_value_t = DiffMode::Combined)]
     pub(crate) diff_mode: DiffMode,

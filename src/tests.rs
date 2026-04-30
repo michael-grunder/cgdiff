@@ -5,6 +5,7 @@ use crate::compare::{
     FunctionComparison, build_comparisons, lcs_len, order_similarity,
     weighted_jaccard,
 };
+use crate::config::{HighlightColor, parse_config};
 use crate::disassembly::{
     BinaryAnalysis, FunctionBuilder, FunctionDisassembly, ParsedInstruction,
     TargetArchitecture, build_objdump_command_for_arch,
@@ -486,6 +487,7 @@ fn filters_visible_items_case_insensitively() {
         false,
         String::new(),
         String::new(),
+        default_highlight(),
     );
 
     app.start_search();
@@ -518,6 +520,7 @@ fn filters_visible_items_with_regex() {
         false,
         String::new(),
         String::new(),
+        default_highlight(),
     );
 
     app.start_search();
@@ -546,6 +549,7 @@ fn filters_out_visible_items_before_filtering_in_tui() {
         false,
         String::new(),
         String::new(),
+        default_highlight(),
     );
 
     app.start_exclude();
@@ -576,6 +580,7 @@ fn invalid_regex_yields_no_matches_and_error() {
         false,
         String::new(),
         String::new(),
+        default_highlight(),
     );
 
     app.start_search();
@@ -602,6 +607,7 @@ fn cancel_search_restores_previous_filter() {
         false,
         String::new(),
         String::new(),
+        default_highlight(),
     );
 
     app.start_search();
@@ -734,6 +740,7 @@ fn app_applies_initial_filter() {
         false,
         String::new(),
         "relay".to_owned(),
+        default_highlight(),
     );
 
     assert_eq!(app.include_query, "relay");
@@ -873,6 +880,36 @@ fn visible_names(app: &App) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn parses_config_values() {
+    let config = parse_config(
+        r#"
+objdump = "/usr/bin/llvm-objdump"
+editor = "vimdiff {file1} {file2}"
+highlight_color = "light-blue"
+"#,
+    )
+    .expect("expected config to parse");
+
+    assert_eq!(
+        config.objdump.as_deref(),
+        Some(Path::new("/usr/bin/llvm-objdump"))
+    );
+    assert_eq!(config.editor.as_deref(), Some("vimdiff {file1} {file2}"));
+    assert_eq!(
+        config.highlight_color,
+        Some(HighlightColor::Color(ratatui::style::Color::LightBlue))
+    );
+}
+
+#[test]
+fn parses_no_highlight_color_config() {
+    let config = parse_config(r#"highlight_color = "none""#)
+        .expect("expected config to parse");
+
+    assert_eq!(config.highlight_color, Some(HighlightColor::None));
+}
+
 fn comparison_for_stdio(
     name: &str,
     combined_score: f64,
@@ -993,6 +1030,10 @@ fn prepared_comparison(name: &str, combined_score: f64) -> PreparedComparison {
         )
         .expect("failed to create right temp file"),
     }
+}
+
+const fn default_highlight() -> HighlightColor {
+    HighlightColor::Color(ratatui::style::Color::Blue)
 }
 
 fn temp_elf_binary(machine: u16) -> NamedTempFile {

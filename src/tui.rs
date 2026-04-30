@@ -19,6 +19,7 @@ use ratatui::widgets::{
 };
 
 use crate::cli::DiffMode;
+use crate::config::HighlightColor;
 use crate::filter::SearchFilter;
 use crate::output::{
     PreparedComparison, comparison_table_headers, comparison_table_row,
@@ -68,6 +69,18 @@ pub(crate) struct App {
     pub(crate) include_query: String,
     include_filter: SearchFilter,
     search_state: Option<SearchState>,
+    highlight_color: HighlightColor,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TuiOptions<'a> {
+    pub(crate) diff_mode: DiffMode,
+    pub(crate) include_unique_functions: bool,
+    pub(crate) include_identical_functions: bool,
+    pub(crate) initial_exclude_query: &'a str,
+    pub(crate) initial_include_query: &'a str,
+    pub(crate) editor: &'a str,
+    pub(crate) highlight_color: HighlightColor,
 }
 
 impl App {
@@ -78,6 +91,7 @@ impl App {
         include_identical_functions: bool,
         initial_exclude_query: String,
         initial_include_query: String,
+        highlight_color: HighlightColor,
     ) -> Self {
         sort_comparisons(&mut items, diff_mode);
         let mut app = Self {
@@ -94,6 +108,7 @@ impl App {
             include_query: initial_include_query,
             include_filter: SearchFilter::Empty,
             search_state: None,
+            highlight_color,
         };
         app.rebuild_filter(None);
         if !app.filtered_indices.is_empty() {
@@ -296,21 +311,17 @@ impl App {
 }
 pub(crate) fn run_tui(
     items: Vec<PreparedComparison>,
-    diff_mode: DiffMode,
-    include_unique_functions: bool,
-    include_identical_functions: bool,
-    initial_exclude_query: &str,
-    initial_include_query: &str,
-    editor: &str,
+    options: TuiOptions<'_>,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let mut app = App::new(
         items,
-        diff_mode,
-        include_unique_functions,
-        include_identical_functions,
-        initial_exclude_query.to_owned(),
-        initial_include_query.to_owned(),
+        options.diff_mode,
+        options.include_unique_functions,
+        options.include_identical_functions,
+        options.initial_exclude_query.to_owned(),
+        options.initial_include_query.to_owned(),
+        options.highlight_color,
     );
 
     loop {
@@ -357,8 +368,10 @@ pub(crate) fn run_tui(
                             KeyCode::Enter => {
                                 if let Some(selection) = app.selected() {
                                     restore_terminal(&mut terminal)?;
-                                    let launch_result =
-                                        launch_editor(editor, selection);
+                                    let launch_result = launch_editor(
+                                        options.editor,
+                                        selection,
+                                    );
                                     terminal = setup_terminal()?;
                                     launch_result?;
                                 }
@@ -542,10 +555,17 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
         )
     }
     .block(Block::default().title("Functions").borders(Borders::ALL))
-    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::Black))
+    .row_highlight_style(row_highlight_style(app.highlight_color))
     .highlight_symbol(">> ");
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+}
+
+const fn row_highlight_style(highlight_color: HighlightColor) -> Style {
+    match highlight_color {
+        HighlightColor::None => Style::new(),
+        HighlightColor::Color(color) => Style::new().bg(color).fg(Color::Black),
+    }
 }
 
 fn detail_lines(selection: Option<&PreparedComparison>) -> Vec<Line<'static>> {
