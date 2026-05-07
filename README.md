@@ -22,6 +22,8 @@ available for scripts or quick checks.
   local branch targets, symbol call targets, and RIP-relative data references.
 - Supports case-insensitive substring includes, excludes, and `/regex/`
   matching.
+- Includes a built-in syntax-highlighted diff viewer for selected functions,
+  with optional handoff to an external diff editor.
 - Provides `--stdio` table and unified diff output for non-interactive use.
 - Embeds build metadata in `--version`, including build date and git SHA.
 
@@ -30,8 +32,8 @@ available for scripts or quick checks.
 - Rust 2024 toolchain.
 - `llvm-objdump` or `objdump` available in `PATH`, unless provided with
   `--objdump` or configured in `~/.config/cgdiff.toml`.
-- A diff-capable editor for the interactive flow. The default command is
-  `nvim -d {file1} {file2}`.
+- Optional: a diff-capable editor for users who want to jump out from the
+  built-in viewer. The default command is `nvim -d {file1} {file2}`.
 
 ## Installation
 
@@ -149,7 +151,11 @@ Options:
 - `2`: sort by instruction-count score.
 - `3`: sort by instruction-order score.
 - `i`: show or hide details for the selected function.
-- `Enter`: open the selected pair in the configured diff editor.
+- `Enter`: open the selected pair in the built-in syntax-highlighted diff
+  viewer.
+- `e`: open the selected pair in the configured diff editor.
+- `j` / `k` / `h` / `l` / `PageUp` / `PageDown` / `Home`: navigate the
+  built-in diff viewer.
 - `?`: show help.
 - `q` / `Esc`: quit.
 

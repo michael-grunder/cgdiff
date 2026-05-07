@@ -6,6 +6,7 @@ use crate::compare::{
     weighted_jaccard,
 };
 use crate::config::{HighlightColor, parse_config};
+use crate::diff_view::{TokenClass, tokenize_asm};
 use crate::disassembly::{
     BinaryAnalysis, FunctionAggregates, FunctionBuilder, FunctionDisassembly,
     ParsedInstruction, TargetArchitecture, build_objdump_command_for_arch,
@@ -937,6 +938,28 @@ fn build_comparisons_hides_perfect_similarity_by_default() {
     assert_eq!(shown.len(), 1);
     assert_eq!(shown[0].name, "shared");
     assert!(shown[0].has_perfect_similarity());
+}
+
+#[test]
+fn tokenizes_normalized_assembly_for_diff_highlighting() {
+    let tokens = tokenize_asm(
+        "    mov rax, qword ptr [rbp - 0x8], sym:worker, 0x10 # note",
+    );
+    let classes = tokens.iter().map(|token| token.class).collect::<Vec<_>>();
+
+    assert!(classes.contains(&TokenClass::Mnemonic));
+    assert!(classes.contains(&TokenClass::Memory));
+    assert!(classes.contains(&TokenClass::Register));
+    assert!(classes.contains(&TokenClass::Immediate));
+    assert!(classes.contains(&TokenClass::Symbol));
+    assert!(classes.contains(&TokenClass::Comment));
+}
+
+#[test]
+fn tokenizes_labels_as_labels() {
+    let tokens = tokenize_asm(".L0001:");
+
+    assert_eq!(tokens[0].class, TokenClass::Label);
 }
 
 fn visible_names(app: &App) -> Vec<String> {

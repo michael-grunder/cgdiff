@@ -4,6 +4,7 @@
 pub(crate) mod cli;
 pub(crate) mod compare;
 pub(crate) mod config;
+pub(crate) mod diff_view;
 pub(crate) mod disassembly;
 pub(crate) mod filter;
 pub(crate) mod output;

@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hidden function rows.
 - Added `--stdio --diff` output for unified diffs of listed functions'
   normalized disassembly.
+- Added a built-in syntax-highlighted TUI diff viewer for selected functions,
+  while preserving external diff editor handoff with `e`.
 
 ### Documentation
 

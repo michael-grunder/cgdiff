@@ -20,6 +20,7 @@ use ratatui::widgets::{
 
 use crate::cli::DiffMode;
 use crate::config::HighlightColor;
+use crate::diff_view::DiffView;
 use crate::disassembly::FunctionAggregates;
 use crate::filter::SearchFilter;
 use crate::output::{
@@ -34,6 +35,7 @@ enum Overlay {
     Help,
     Info,
     Aggregates,
+    Diff,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +76,7 @@ pub(crate) struct App {
     aggregate_query: String,
     aggregate_filter: SearchFilter,
     aggregate_scroll: u16,
+    diff_view: Option<DiffView>,
     search_state: Option<SearchState>,
     highlight_color: HighlightColor,
 }
@@ -116,6 +119,7 @@ impl App {
             aggregate_query: String::new(),
             aggregate_filter: SearchFilter::Empty,
             aggregate_scroll: 0,
+            diff_view: None,
             search_state: None,
             highlight_color,
         };
@@ -175,6 +179,13 @@ impl App {
         }
     }
 
+    pub(crate) fn open_diff(&mut self) {
+        if let Some(diff_view) = self.selected().map(DiffView::from_selection) {
+            self.diff_view = Some(diff_view);
+            self.overlay = Some(Overlay::Diff);
+        }
+    }
+
     pub(crate) fn toggle_aggregates(&mut self) {
         if self.selected().is_some() {
             self.aggregate_scroll = 0;
@@ -198,6 +209,36 @@ impl App {
             true
         } else {
             false
+        }
+    }
+
+    pub(crate) const fn scroll_diff_down(&mut self, amount: u16) {
+        if let Some(diff_view) = self.diff_view.as_mut() {
+            diff_view.scroll_down(amount);
+        }
+    }
+
+    pub(crate) const fn scroll_diff_up(&mut self, amount: u16) {
+        if let Some(diff_view) = self.diff_view.as_mut() {
+            diff_view.scroll_up(amount);
+        }
+    }
+
+    pub(crate) const fn scroll_diff_right(&mut self, amount: u16) {
+        if let Some(diff_view) = self.diff_view.as_mut() {
+            diff_view.scroll_right(amount);
+        }
+    }
+
+    pub(crate) const fn scroll_diff_left(&mut self, amount: u16) {
+        if let Some(diff_view) = self.diff_view.as_mut() {
+            diff_view.scroll_left(amount);
+        }
+    }
+
+    pub(crate) const fn reset_diff_horizontal_scroll(&mut self) {
+        if let Some(diff_view) = self.diff_view.as_mut() {
+            diff_view.reset_horizontal_scroll();
         }
     }
 
@@ -398,68 +439,12 @@ pub(crate) fn run_tui(
         {
             match event::read().context("failed reading terminal event")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.is_searching() {
-                        match key.code {
-                            KeyCode::Esc => app.cancel_search(),
-                            KeyCode::Enter => app.confirm_search(),
-                            KeyCode::Backspace => app.pop_search_char(),
-                            KeyCode::Char(character) => {
-                                app.append_search_char(character);
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Esc if !app.close_overlay() => {
-                                app.should_quit = true;
-                            }
-                            KeyCode::Char('q') => app.should_quit = true,
-                            KeyCode::Down | KeyCode::Char('j')
-                                if matches!(
-                                    app.overlay,
-                                    Some(Overlay::Aggregates)
-                                ) =>
-                            {
-                                app.scroll_aggregates_down();
-                            }
-                            KeyCode::Up | KeyCode::Char('k')
-                                if matches!(
-                                    app.overlay,
-                                    Some(Overlay::Aggregates)
-                                ) =>
-                            {
-                                app.scroll_aggregates_up();
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => app.next(),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                            KeyCode::Char('1') => {
-                                app.resort(DiffMode::Combined);
-                            }
-                            KeyCode::Char('2') => app.resort(DiffMode::Count),
-                            KeyCode::Char('3') => app.resort(DiffMode::Order),
-                            KeyCode::Char('i' | 'I') => {
-                                app.toggle_details();
-                            }
-                            KeyCode::Char('a' | 'A') => {
-                                app.toggle_aggregates();
-                            }
-                            KeyCode::Char('/') => app.start_search(),
-                            KeyCode::Char('!') => app.start_exclude(),
-                            KeyCode::Char('?') => app.toggle_help(),
-                            KeyCode::Enter => {
-                                if let Some(selection) = app.selected() {
-                                    restore_terminal(&mut terminal)?;
-                                    let launch_result = launch_editor(
-                                        options.editor,
-                                        selection,
-                                    );
-                                    terminal = setup_terminal()?;
-                                    launch_result?;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    handle_key(
+                        &mut terminal,
+                        &mut app,
+                        key.code,
+                        options.editor,
+                    )?;
                 }
                 _ => {}
             }
@@ -467,6 +452,115 @@ pub(crate) fn run_tui(
     }
 
     restore_terminal(&mut terminal)
+}
+
+fn handle_key(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    code: KeyCode,
+    editor: &str,
+) -> Result<()> {
+    if app.is_searching() {
+        handle_search_key(app, code);
+    } else {
+        handle_normal_key(terminal, app, code, editor)?;
+    }
+
+    Ok(())
+}
+
+fn handle_search_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => app.cancel_search(),
+        KeyCode::Enter => app.confirm_search(),
+        KeyCode::Backspace => app.pop_search_char(),
+        KeyCode::Char(character) => app.append_search_char(character),
+        _ => {}
+    }
+}
+
+fn handle_normal_key(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    code: KeyCode,
+    editor: &str,
+) -> Result<()> {
+    if handle_diff_key(app, code) || handle_aggregate_key(app, code) {
+        return Ok(());
+    }
+
+    match code {
+        KeyCode::Esc if !app.close_overlay() => app.should_quit = true,
+        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Down | KeyCode::Char('j') => app.next(),
+        KeyCode::Up | KeyCode::Char('k') => app.previous(),
+        KeyCode::Char('1') => app.resort(DiffMode::Combined),
+        KeyCode::Char('2') => app.resort(DiffMode::Count),
+        KeyCode::Char('3') => app.resort(DiffMode::Order),
+        KeyCode::Char('i' | 'I') => app.toggle_details(),
+        KeyCode::Char('a' | 'A') => app.toggle_aggregates(),
+        KeyCode::Char('/') => app.start_search(),
+        KeyCode::Char('!') => app.start_exclude(),
+        KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Enter if app.overlay.is_none() => app.open_diff(),
+        KeyCode::Char('e' | 'E') => {
+            launch_selected_editor(terminal, app, editor)?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+const fn handle_diff_key(app: &mut App, code: KeyCode) -> bool {
+    if !matches!(app.overlay, Some(Overlay::Diff)) {
+        return false;
+    }
+
+    match code {
+        KeyCode::Char('q') | KeyCode::Enter => {
+            app.close_overlay();
+        }
+        KeyCode::Down | KeyCode::Char('j') => app.scroll_diff_down(1),
+        KeyCode::Up | KeyCode::Char('k') => app.scroll_diff_up(1),
+        KeyCode::PageDown => app.scroll_diff_down(10),
+        KeyCode::PageUp => app.scroll_diff_up(10),
+        KeyCode::Right | KeyCode::Char('l') => app.scroll_diff_right(4),
+        KeyCode::Left | KeyCode::Char('h') => app.scroll_diff_left(4),
+        KeyCode::Home => app.reset_diff_horizontal_scroll(),
+        _ => return false,
+    }
+
+    true
+}
+
+const fn handle_aggregate_key(app: &mut App, code: KeyCode) -> bool {
+    if !matches!(app.overlay, Some(Overlay::Aggregates)) {
+        return false;
+    }
+
+    match code {
+        KeyCode::Down | KeyCode::Char('j') => app.scroll_aggregates_down(),
+        KeyCode::Up | KeyCode::Char('k') => app.scroll_aggregates_up(),
+        _ => return false,
+    }
+
+    true
+}
+
+fn launch_selected_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &App,
+    editor: &str,
+) -> Result<()> {
+    let Some(selection) = app.selected() else {
+        return Ok(());
+    };
+
+    restore_terminal(terminal)?;
+    let launch_result = launch_editor(editor, selection);
+    *terminal = setup_terminal()?;
+    launch_result
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -505,6 +599,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         Some(Overlay::Help) => draw_help(frame),
         Some(Overlay::Info) => draw_details_popup(frame, app.selected()),
         Some(Overlay::Aggregates) => draw_aggregates_popup(frame, app),
+        Some(Overlay::Diff) => draw_diff_view(frame, app.diff_view.as_ref()),
         None => {}
     }
 }
@@ -690,7 +785,7 @@ fn detail_lines(selection: Option<&PreparedComparison>) -> Vec<Line<'static>> {
                 )),
                 Line::from(""),
                 Line::from(
-                    "Enter opens the configured editor on the rendered disassembly.",
+                    "Enter opens the built-in diff. e opens the configured editor.",
                 ),
             ]
         },
@@ -764,6 +859,53 @@ fn draw_aggregates_popup(frame: &mut ratatui::Frame<'_>, app: &App) {
             .scroll((app.aggregate_scroll, 0))
             .wrap(Wrap { trim: false });
     frame.render_widget(details, popup);
+}
+
+fn draw_diff_view(
+    frame: &mut ratatui::Frame<'_>,
+    diff_view: Option<&DiffView>,
+) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let title = diff_view.map_or("Diff", DiffView::title);
+    let header = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(
+                title.to_owned(),
+                Style::new()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::raw("Enter returns to the function list"),
+        ]),
+        Line::from("j/k scroll  h/l pan  PgUp/PgDn page  Home left edge  e editor  q/Esc close"),
+    ])
+    .block(Block::default().title("Built-in diff").borders(Borders::ALL));
+    frame.render_widget(header, vertical[0]);
+
+    let (lines, scroll) = diff_view.map_or_else(
+        || (vec![Line::from("No selected function.")], (0, 0)),
+        |diff_view| (diff_view.rendered_lines(), diff_view.scroll()),
+    );
+    let diff = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL))
+        .scroll(scroll);
+    frame.render_widget(diff, vertical[1]);
+
+    let footer = Paragraph::new("legend: + added  - removed  yellow changed  syntax colors assembly tokens")
+        .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, vertical[2]);
 }
 
 #[derive(Clone, Debug)]
@@ -848,7 +990,7 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         footer
     } else {
         format!(
-            "j/k or arrows move  / include  ! exclude  Enter diff  i info  a aggregates  1/2/3 resort  ? help  q quit  items: {}",
+            "j/k or arrows move  / include  ! exclude  Enter diff  e editor  i info  a aggregates  1/2/3 resort  ? help  q quit  items: {}",
             app.items.len()
         )
     };
@@ -873,7 +1015,9 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("a: toggle aggregate comparison popup"),
         Line::from("Arrows in aggregate popup: scroll rows"),
         Line::from("/: filter aggregate rows while aggregate popup is open"),
-        Line::from("Enter: open diff editor"),
+        Line::from("Enter: open built-in syntax highlighted diff"),
+        Line::from("e: open configured diff editor"),
+        Line::from("j/k/h/l/PgUp/PgDn/Home: navigate built-in diff"),
         Line::from(
             "Default view hides unique functions and shared functions that are identical or score 1.000.",
         ),
