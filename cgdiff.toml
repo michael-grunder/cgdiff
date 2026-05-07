@@ -15,6 +15,10 @@
 # with temporary files containing the rendered disassembly for each binary.
 # editor = "nvim -d {file1} {file2}"
 
+# Number of unchanged lines to keep around changes in the built-in
+# side-by-side diff view. Longer identical regions are folded with a summary.
+# diff_context = 6
+
 # Background color for the selected row in the TUI.
 #
 # The default is "blue". Set this to "none" or "off" to disable the background

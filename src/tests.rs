@@ -6,7 +6,9 @@ use crate::compare::{
     weighted_jaccard,
 };
 use crate::config::{HighlightColor, parse_config};
-use crate::diff_view::{DiffView, TokenClass, tokenize_asm};
+use crate::diff_view::{
+    DEFAULT_DIFF_CONTEXT, DiffView, TokenClass, tokenize_asm,
+};
 use crate::disassembly::{
     BinaryAnalysis, FunctionAggregates, FunctionBuilder, FunctionDisassembly,
     ParsedInstruction, TargetArchitecture, build_objdump_command_for_arch,
@@ -19,7 +21,7 @@ use crate::output::{
     PreparedComparison, dump_comparison_diff, dump_comparisons,
     temp_function_component, write_temp_disassembly,
 };
-use crate::tui::App;
+use crate::tui::{App, AppOptions};
 use clap::Parser;
 use ratatui::text::Line;
 use std::collections::HashMap;
@@ -65,6 +67,15 @@ fn parses_diff_without_stdio() {
 
     assert!(cli.diff);
     assert!(!cli.stdio);
+}
+
+#[test]
+fn parses_diff_context_option() {
+    let cli =
+        Cli::try_parse_from(["cgdiff", "--diff-context", "3", "old", "new"])
+            .expect("expected diff context option to parse");
+
+    assert_eq!(cli.diff_context, Some(3));
 }
 
 #[test]
@@ -548,12 +559,7 @@ fn filters_visible_items_case_insensitively() {
             prepared_comparison("beta", 0.2),
             prepared_comparison("relay_worker", 0.3),
         ],
-        DiffMode::Combined,
-        false,
-        false,
-        String::new(),
-        String::new(),
-        default_highlight(),
+        default_app_options(),
     );
 
     app.start_search();
@@ -581,12 +587,7 @@ fn filters_visible_items_with_regex() {
             prepared_comparison("relay_worker", 0.2),
             prepared_comparison("other", 0.3),
         ],
-        DiffMode::Combined,
-        false,
-        false,
-        String::new(),
-        String::new(),
-        default_highlight(),
+        default_app_options(),
     );
 
     app.start_search();
@@ -610,12 +611,7 @@ fn filters_out_visible_items_before_filtering_in_tui() {
             prepared_comparison("relay_one.cold", 0.2),
             prepared_comparison("other", 0.3),
         ],
-        DiffMode::Combined,
-        false,
-        false,
-        String::new(),
-        String::new(),
-        default_highlight(),
+        default_app_options(),
     );
 
     app.start_exclude();
@@ -641,12 +637,7 @@ fn invalid_regex_yields_no_matches_and_error() {
             prepared_comparison("AlphaRelay", 0.1),
             prepared_comparison("relay_worker", 0.2),
         ],
-        DiffMode::Combined,
-        false,
-        false,
-        String::new(),
-        String::new(),
-        default_highlight(),
+        default_app_options(),
     );
 
     app.start_search();
@@ -668,12 +659,7 @@ fn cancel_search_restores_previous_filter() {
             prepared_comparison("relay_b", 0.2),
             prepared_comparison("other", 0.3),
         ],
-        DiffMode::Combined,
-        false,
-        false,
-        String::new(),
-        String::new(),
-        default_highlight(),
+        default_app_options(),
     );
 
     app.start_search();
@@ -801,12 +787,10 @@ fn app_applies_initial_filter() {
             prepared_comparison("relay_worker", 0.2),
             prepared_comparison("other", 0.3),
         ],
-        DiffMode::Combined,
-        false,
-        false,
-        String::new(),
-        "relay".to_owned(),
-        default_highlight(),
+        AppOptions {
+            initial_include_query: "relay".to_owned(),
+            ..default_app_options()
+        },
     );
 
     assert_eq!(app.include_query, "relay");
@@ -982,7 +966,8 @@ fn side_by_side_diff_pairs_replacements_and_insertions() {
         .expect("right function should exist")
         .rendered = right_rendered.to_owned();
 
-    let mut view = DiffView::from_selection(&prepared);
+    let mut view =
+        DiffView::from_selection_with_context(&prepared, DEFAULT_DIFF_CONTEXT);
     assert_eq!(view.mode_label(), "stacked");
     view.toggle_mode();
 
@@ -1001,6 +986,80 @@ fn side_by_side_diff_pairs_replacements_and_insertions() {
     view.scroll_right(4);
     assert_eq!(view.scroll(), (0, 0));
     assert!(line_text(&view.rendered_lines(80)[2]).contains("- add rax, 1"));
+}
+
+#[test]
+fn side_by_side_diff_folds_long_initial_equal_blocks() {
+    let mut prepared = prepared_comparison("fold", 0.1);
+    let shared = (0..10)
+        .map(|index| format!("    inc rax ; {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let left_rendered = format!("{shared}\n    mov rbx, 0x01\n");
+    let right_rendered = format!("{shared}\n    mov rbx, 0x1234567890\n");
+    prepared
+        .comparison
+        .function1
+        .as_mut()
+        .expect("left function should exist")
+        .rendered = left_rendered;
+    prepared
+        .comparison
+        .function2
+        .as_mut()
+        .expect("right function should exist")
+        .rendered = right_rendered;
+
+    let mut view = DiffView::from_selection_with_context(&prepared, 2);
+    view.toggle_mode();
+
+    let lines = view
+        .rendered_lines(100)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>();
+
+    assert!(lines[0].contains("+--  8 lines: inc rax ; 0"));
+    assert!(lines[1].contains("inc rax ; 8"));
+    assert!(lines[2].contains("inc rax ; 9"));
+    assert!(lines[3].contains("-     mov rbx, 0x01"));
+    assert!(!lines.iter().any(|line| line.contains("inc rax ; 1")));
+}
+
+#[test]
+fn side_by_side_diff_keeps_head_and_tail_context_between_changes() {
+    let mut prepared = prepared_comparison("fold_middle", 0.1);
+    let shared = (0..10)
+        .map(|index| format!("    inc rax ; {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    prepared
+        .comparison
+        .function1
+        .as_mut()
+        .expect("left function should exist")
+        .rendered = format!("    mov rbx, 1\n{shared}\n    add rbx, 1\n");
+    prepared
+        .comparison
+        .function2
+        .as_mut()
+        .expect("right function should exist")
+        .rendered = format!("    mov rbx, 2\n{shared}\n    add rbx, 2\n");
+
+    let mut view = DiffView::from_selection_with_context(&prepared, 2);
+    view.toggle_mode();
+
+    let lines = view
+        .rendered_lines(100)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>();
+
+    assert!(lines[1].contains("inc rax ; 0"));
+    assert!(lines[2].contains("inc rax ; 1"));
+    assert!(lines[3].contains("+--  6 lines: inc rax ; 2"));
+    assert!(lines[4].contains("inc rax ; 8"));
+    assert!(lines[5].contains("inc rax ; 9"));
 }
 
 fn line_text(line: &Line<'static>) -> String {
@@ -1023,6 +1082,7 @@ fn parses_config_values() {
         r#"
 objdump = "/usr/bin/llvm-objdump"
 editor = "vimdiff {file1} {file2}"
+diff_context = 4
 highlight_color = "light-blue"
 "#,
     )
@@ -1033,6 +1093,7 @@ highlight_color = "light-blue"
         Some(Path::new("/usr/bin/llvm-objdump"))
     );
     assert_eq!(config.editor.as_deref(), Some("vimdiff {file1} {file2}"));
+    assert_eq!(config.diff_context, Some(4));
     assert_eq!(
         config.highlight_color,
         Some(HighlightColor::Color(ratatui::style::Color::LightBlue))
@@ -1175,6 +1236,18 @@ fn prepared_comparison(name: &str, combined_score: f64) -> PreparedComparison {
 
 const fn default_highlight() -> HighlightColor {
     HighlightColor::Color(ratatui::style::Color::Blue)
+}
+
+fn default_app_options() -> AppOptions {
+    AppOptions {
+        diff_mode: DiffMode::Combined,
+        include_unique_functions: false,
+        include_identical_functions: false,
+        initial_exclude_query: String::new(),
+        initial_include_query: String::new(),
+        highlight_color: default_highlight(),
+        diff_context: DEFAULT_DIFF_CONTEXT,
+    }
 }
 
 fn temp_elf_binary(machine: u16) -> NamedTempFile {

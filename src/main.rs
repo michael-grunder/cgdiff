@@ -25,6 +25,7 @@ use clap::Parser;
 use crate::cli::Cli;
 use crate::compare::build_comparisons;
 use crate::config::{Config, HighlightColor};
+use crate::diff_view::DEFAULT_DIFF_CONTEXT;
 use crate::disassembly::{BinaryAnalysis, analyze_binary};
 use crate::filter::compile_cli_filter;
 use crate::output::{
@@ -49,6 +50,10 @@ fn main() -> Result<()> {
     let highlight_color = config
         .highlight_color
         .unwrap_or(HighlightColor::Color(ratatui::style::Color::Blue));
+    let diff_context = cli
+        .diff_context
+        .or(config.diff_context)
+        .unwrap_or(DEFAULT_DIFF_CONTEXT);
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let binary1 = cli.binary1.clone();
@@ -111,6 +116,7 @@ fn main() -> Result<()> {
             initial_include_query: cli.include.as_deref().unwrap_or_default(),
             editor,
             highlight_color,
+            diff_context,
         },
     )?;
 

@@ -79,6 +79,7 @@ pub(crate) struct App {
     diff_view: Option<DiffView>,
     search_state: Option<SearchState>,
     highlight_color: HighlightColor,
+    diff_context: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,38 +91,46 @@ pub(crate) struct TuiOptions<'a> {
     pub(crate) initial_include_query: &'a str,
     pub(crate) editor: &'a str,
     pub(crate) highlight_color: HighlightColor,
+    pub(crate) diff_context: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AppOptions {
+    pub(crate) diff_mode: DiffMode,
+    pub(crate) include_unique_functions: bool,
+    pub(crate) include_identical_functions: bool,
+    pub(crate) initial_exclude_query: String,
+    pub(crate) initial_include_query: String,
+    pub(crate) highlight_color: HighlightColor,
+    pub(crate) diff_context: usize,
 }
 
 impl App {
     pub(crate) fn new(
         mut items: Vec<PreparedComparison>,
-        diff_mode: DiffMode,
-        include_unique_functions: bool,
-        include_identical_functions: bool,
-        initial_exclude_query: String,
-        initial_include_query: String,
-        highlight_color: HighlightColor,
+        options: AppOptions,
     ) -> Self {
-        sort_comparisons(&mut items, diff_mode);
+        sort_comparisons(&mut items, options.diff_mode);
         let mut app = Self {
             items,
             filtered_indices: Vec::new(),
-            diff_mode,
+            diff_mode: options.diff_mode,
             table_state: TableState::default(),
             should_quit: false,
             overlay: None,
-            include_unique_functions,
-            include_identical_functions,
-            exclude_query: initial_exclude_query,
+            include_unique_functions: options.include_unique_functions,
+            include_identical_functions: options.include_identical_functions,
+            exclude_query: options.initial_exclude_query,
             exclude_filter: SearchFilter::Empty,
-            include_query: initial_include_query,
+            include_query: options.initial_include_query,
             include_filter: SearchFilter::Empty,
             aggregate_query: String::new(),
             aggregate_filter: SearchFilter::Empty,
             aggregate_scroll: 0,
             diff_view: None,
             search_state: None,
-            highlight_color,
+            highlight_color: options.highlight_color,
+            diff_context: options.diff_context,
         };
         app.rebuild_filter(None);
         if !app.filtered_indices.is_empty() {
@@ -180,7 +189,9 @@ impl App {
     }
 
     pub(crate) fn open_diff(&mut self) {
-        if let Some(diff_view) = self.selected().map(DiffView::from_selection) {
+        if let Some(diff_view) = self.selected().map(|selection| {
+            DiffView::from_selection_with_context(selection, self.diff_context)
+        }) {
             self.diff_view = Some(diff_view);
             self.overlay = Some(Overlay::Diff);
         }
@@ -425,12 +436,15 @@ pub(crate) fn run_tui(
     let mut terminal = setup_terminal()?;
     let mut app = App::new(
         items,
-        options.diff_mode,
-        options.include_unique_functions,
-        options.include_identical_functions,
-        options.initial_exclude_query.to_owned(),
-        options.initial_include_query.to_owned(),
-        options.highlight_color,
+        AppOptions {
+            diff_mode: options.diff_mode,
+            include_unique_functions: options.include_unique_functions,
+            include_identical_functions: options.include_identical_functions,
+            initial_exclude_query: options.initial_exclude_query.to_owned(),
+            initial_include_query: options.initial_include_query.to_owned(),
+            highlight_color: options.highlight_color,
+            diff_context: options.diff_context,
+        },
     );
 
     loop {

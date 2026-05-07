@@ -8,6 +8,7 @@ use crate::output::PreparedComparison;
 
 const DIFF_PREFIX_WIDTH: usize = 2;
 const SIDE_BY_SIDE_GUTTER_WIDTH: usize = 3;
+pub(crate) const DEFAULT_DIFF_CONTEXT: usize = 6;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DiffView {
@@ -40,6 +41,7 @@ struct SideBySideLine {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DiffLineKind {
     Context,
+    Fold,
     Added,
     Removed,
     ChangedAdded,
@@ -67,7 +69,10 @@ pub(crate) struct Token {
 }
 
 impl DiffView {
-    pub(crate) fn from_selection(selection: &PreparedComparison) -> Self {
+    pub(crate) fn from_selection_with_context(
+        selection: &PreparedComparison,
+        diff_context: usize,
+    ) -> Self {
         let left = selection.comparison.function1.as_ref().map_or_else(
             || format!("missing function: {}\n", selection.comparison.name),
             |function| function.rendered.clone(),
@@ -80,7 +85,7 @@ impl DiffView {
         Self {
             title: format!("Diff {}", selection.comparison.name),
             stacked_lines: diff_lines(&left, &right),
-            side_by_side_lines: side_by_side_lines(&left, &right),
+            side_by_side_lines: side_by_side_lines(&left, &right, diff_context),
             mode: DiffViewMode::Stacked,
             scroll: 0,
             horizontal_scroll: 0,
@@ -196,28 +201,33 @@ fn diff_lines(left: &str, right: &str) -> Vec<DiffDisplayLine> {
         .collect()
 }
 
-fn side_by_side_lines(left: &str, right: &str) -> Vec<SideBySideLine> {
+fn side_by_side_lines(
+    left: &str,
+    right: &str,
+    diff_context: usize,
+) -> Vec<SideBySideLine> {
     let diff = TextDiff::from_lines(left, right);
     let old_lines = diff.old_slices();
     let new_lines = diff.new_slices();
     let mut lines = Vec::new();
+    let ops = diff.ops();
 
-    for op in diff.ops() {
+    for (op_index, op) in ops.iter().enumerate() {
         let (tag, old_range, new_range) = op.as_tag_tuple();
         match tag {
             DiffTag::Equal => {
-                lines.extend(old_range.zip(new_range).map(|(old, new)| {
-                    SideBySideLine {
-                        left: Some(display_line(
-                            DiffLineKind::Context,
-                            old_lines[old],
-                        )),
-                        right: Some(display_line(
-                            DiffLineKind::Context,
-                            new_lines[new],
-                        )),
-                    }
-                }));
+                lines.extend(folded_equal_lines(
+                    old_lines,
+                    new_lines,
+                    old_range,
+                    new_range,
+                    EqualBlockPosition {
+                        is_first: op_index == 0,
+                        is_last: op_index + 1 == ops.len(),
+                        is_only: ops.len() == 1,
+                    },
+                    diff_context,
+                ));
             }
             DiffTag::Delete => {
                 lines.extend(old_range.map(|old| SideBySideLine {
@@ -254,6 +264,108 @@ fn side_by_side_lines(left: &str, right: &str) -> Vec<SideBySideLine> {
     }
 
     lines
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EqualBlockPosition {
+    is_first: bool,
+    is_last: bool,
+    is_only: bool,
+}
+
+fn folded_equal_lines(
+    old_lines: &[&str],
+    new_lines: &[&str],
+    old_range: std::ops::Range<usize>,
+    new_range: std::ops::Range<usize>,
+    position: EqualBlockPosition,
+    diff_context: usize,
+) -> Vec<SideBySideLine> {
+    let len = old_range.len();
+    if position.is_only || len <= diff_context {
+        return old_range
+            .zip(new_range)
+            .map(|(old, new)| {
+                equal_side_by_side_line(old_lines[old], new_lines[new])
+            })
+            .collect();
+    }
+
+    let keep_head = if position.is_first {
+        0
+    } else {
+        diff_context.min(len)
+    };
+    let keep_tail = if position.is_last {
+        0
+    } else {
+        diff_context.min(len.saturating_sub(keep_head))
+    };
+    let kept = keep_head.saturating_add(keep_tail);
+    if kept >= len {
+        return old_range
+            .zip(new_range)
+            .map(|(old, new)| {
+                equal_side_by_side_line(old_lines[old], new_lines[new])
+            })
+            .collect();
+    }
+
+    let fold_start_offset = keep_head;
+    let fold_end_offset = len - keep_tail;
+    let mut lines = Vec::with_capacity(kept.saturating_add(1));
+
+    lines.extend(
+        old_range
+            .clone()
+            .take(keep_head)
+            .zip(new_range.clone().take(keep_head))
+            .map(|(old, new)| {
+                equal_side_by_side_line(old_lines[old], new_lines[new])
+            }),
+    );
+    lines.push(fold_side_by_side_line(
+        fold_end_offset - fold_start_offset,
+        old_lines[old_range.start + fold_start_offset],
+    ));
+    lines.extend(
+        old_range
+            .skip(fold_end_offset)
+            .zip(new_range.skip(fold_end_offset))
+            .map(|(old, new)| {
+                equal_side_by_side_line(old_lines[old], new_lines[new])
+            }),
+    );
+
+    lines
+}
+
+fn equal_side_by_side_line(old_line: &str, new_line: &str) -> SideBySideLine {
+    SideBySideLine {
+        left: Some(display_line(DiffLineKind::Context, old_line)),
+        right: Some(display_line(DiffLineKind::Context, new_line)),
+    }
+}
+
+fn fold_side_by_side_line(
+    folded_count: usize,
+    first_folded_line: &str,
+) -> SideBySideLine {
+    let text = fold_line_text(folded_count, first_folded_line);
+    SideBySideLine {
+        left: Some(display_line(DiffLineKind::Fold, &text)),
+        right: Some(display_line(DiffLineKind::Fold, &text)),
+    }
+}
+
+fn fold_line_text(folded_count: usize, first_folded_line: &str) -> String {
+    let noun = if folded_count == 1 { "line" } else { "lines" };
+    let preview = trim_diff_line(first_folded_line).trim();
+    if preview.is_empty() {
+        format!("+-- {folded_count:>2} {noun}")
+    } else {
+        format!("+-- {folded_count:>2} {noun}: {preview}")
+    }
 }
 
 fn display_line(kind: DiffLineKind, text: &str) -> DiffDisplayLine {
@@ -347,7 +459,7 @@ impl DiffViewMode {
 impl DiffLineKind {
     const fn prefix(self) -> &'static str {
         match self {
-            Self::Context => "  ",
+            Self::Context | Self::Fold => "  ",
             Self::Added | Self::ChangedAdded => "+ ",
             Self::Removed | Self::ChangedRemoved => "- ",
         }
@@ -355,7 +467,7 @@ impl DiffLineKind {
 
     const fn prefix_style(self) -> Style {
         match self {
-            Self::Context => Style::new().fg(Color::DarkGray),
+            Self::Context | Self::Fold => Style::new().fg(Color::DarkGray),
             Self::Added => Style::new()
                 .fg(Color::LightGreen)
                 .add_modifier(Modifier::BOLD),
@@ -370,7 +482,7 @@ impl DiffLineKind {
 
     const fn background(self) -> Option<Color> {
         match self {
-            Self::Context => None,
+            Self::Context | Self::Fold => None,
             Self::Added => Some(Color::Rgb(8, 48, 28)),
             Self::Removed => Some(Color::Rgb(58, 24, 30)),
             Self::ChangedAdded | Self::ChangedRemoved => {

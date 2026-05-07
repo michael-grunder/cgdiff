@@ -14,6 +14,8 @@ pub(crate) struct Config {
     pub(crate) objdump: Option<PathBuf>,
     /// Command used to launch the diff editor.
     pub(crate) editor: Option<String>,
+    /// Number of unchanged lines to keep around side-by-side diff changes.
+    pub(crate) diff_context: Option<usize>,
     /// Background color for the selected TUI row.
     pub(crate) highlight_color: Option<HighlightColor>,
 }

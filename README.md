@@ -111,9 +111,12 @@ Command-line flags take precedence over config values.
 ```toml
 objdump = "/usr/bin/llvm-objdump"
 editor = "vimdiff {file1} {file2}"
+diff_context = 6
 highlight_color = "blue"
 ```
 
+`diff_context` controls how many unchanged lines the built-in side-by-side diff
+keeps around changes before folding larger identical regions.
 Set `highlight_color = "none"` to disable the TUI row highlight background.
 The repository includes a commented [`cgdiff.toml`](cgdiff.toml) example with
 the supported color names.
@@ -131,6 +134,7 @@ Options:
   -o, --objdump <OBJDUMP>            Path to objdump program
   -e, --editor <EDITOR>              Command used to launch the diff editor
   -d, --diff-mode <DIFF_MODE>        Sort mode: combined, count, or order
+      --diff-context <DIFF_CONTEXT>  Unchanged side-by-side context lines
       --include-unique               Include functions only present in one binary
       --include-identical            Include identical or perfect-score functions
       --include <INCLUDE>            Include by substring or `/regex/`

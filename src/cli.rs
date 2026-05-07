@@ -33,6 +33,9 @@ pub(crate) struct Cli {
     /// Sort mode for similarity results.
     #[arg(short = 'd', long = "diff-mode", default_value_t = DiffMode::Combined)]
     pub(crate) diff_mode: DiffMode,
+    /// Unchanged lines kept around changes in side-by-side diffs.
+    #[arg(long = "diff-context")]
+    pub(crate) diff_context: Option<usize>,
     /// Include functions that only exist in one binary in the TUI.
     #[arg(long = "include-unique", alias = "include-unique-functions")]
     pub(crate) include_unique_functions: bool,

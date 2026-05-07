@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a built-in syntax-highlighted TUI diff viewer for selected functions,
   while preserving external diff editor handoff with `e`.
 - Added side-by-side layout mode for the built-in TUI diff viewer.
+- Added folding for long unchanged side-by-side diff regions, configurable
+  with `diff_context` or `--diff-context`.
 
 ### Documentation
 
