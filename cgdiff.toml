@@ -27,4 +27,25 @@
 # Supported colors:
 #   black, red, green, yellow, blue, magenta, cyan, gray, dark-gray, white
 #   light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan
+#   #rrggbb
 highlight_color = "black"
+
+# Syntax highlighting theme for the built-in diff viewer.
+#
+# Use `cgdiff --list-themes` to preview the available themes. The default theme
+# matches the original cgdiff syntax colors exactly.
+#
+# Built-in themes:
+#   default, ansi, monokai, solarized-dark, gruvbox-dark, nord
+# theme = "default"
+
+# Optional per-token syntax color overrides. These are applied after the theme,
+# so you can select a theme and adjust only the tokens you care about.
+#
+# Supported token names:
+#   address, bytes, label, mnemonic, register, immediate, memory, symbol,
+#   comment, plain
+#
+# [syntax_colors]
+# mnemonic = "light-yellow"
+# register = "#8ec7ff"

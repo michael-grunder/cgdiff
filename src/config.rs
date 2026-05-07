@@ -3,9 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use ratatui::style::Color;
 use serde::Deserialize;
+
+use crate::theme::{SyntaxColorOverrides, parse_color};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +20,11 @@ pub(crate) struct Config {
     pub(crate) diff_context: Option<usize>,
     /// Background color for the selected TUI row.
     pub(crate) highlight_color: Option<HighlightColor>,
+    /// Syntax highlighting theme name.
+    #[serde(rename = "theme", alias = "syntax_theme")]
+    pub(crate) syntax_theme: Option<String>,
+    /// Per-token syntax color overrides applied after the theme.
+    pub(crate) syntax_colors: Option<SyntaxColorOverrides>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,29 +73,7 @@ impl FromStr for HighlightColor {
             return Ok(Self::None);
         }
 
-        let color = match normalized.as_str() {
-            "black" => Color::Black,
-            "red" => Color::Red,
-            "green" => Color::Green,
-            "yellow" => Color::Yellow,
-            "blue" => Color::Blue,
-            "magenta" => Color::Magenta,
-            "cyan" => Color::Cyan,
-            "gray" | "grey" => Color::Gray,
-            "dark-gray" | "dark-grey" | "darkgray" | "darkgrey" => {
-                Color::DarkGray
-            }
-            "light-red" | "lightred" => Color::LightRed,
-            "light-green" | "lightgreen" => Color::LightGreen,
-            "light-yellow" | "lightyellow" => Color::LightYellow,
-            "light-blue" | "lightblue" => Color::LightBlue,
-            "light-magenta" | "lightmagenta" => Color::LightMagenta,
-            "light-cyan" | "lightcyan" => Color::LightCyan,
-            "white" => Color::White,
-            _ => bail!("unsupported highlight_color `{value}`"),
-        };
-
-        Ok(Self::Color(color))
+        Ok(Self::Color(parse_color(value, "highlight_color")?))
     }
 }
 

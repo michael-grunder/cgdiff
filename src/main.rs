@@ -9,6 +9,7 @@ pub(crate) mod disassembly;
 pub(crate) mod filter;
 pub(crate) mod output;
 pub(crate) mod progress;
+pub(crate) mod theme;
 pub(crate) mod tui;
 
 #[cfg(test)]
@@ -32,14 +33,23 @@ use crate::output::{
     dump_comparison_diff, dump_comparisons, prepare_comparisons,
 };
 use crate::progress::render_progress;
+use crate::theme::{
+    DEFAULT_THEME_NAME, SyntaxColorOverrides, SyntaxTheme, write_theme_samples,
+};
 use crate::tui::{TuiOptions, run_tui};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.list_themes {
+        write_theme_samples(io::stdout())?;
+        return Ok(());
+    }
+
     let stdio = cli.stdio || cli.diff;
     let config = Config::load()?;
     let include = compile_cli_filter(cli.include.as_deref(), "--include")?;
     let exclude = compile_cli_filter(cli.exclude.as_deref(), "--exclude")?;
+    let (binary1, binary2) = required_binaries(&cli);
     let objdump =
         select_objdump(cli.objdump.as_deref().or(config.objdump.as_deref()))?;
     let editor = cli
@@ -54,12 +64,19 @@ fn main() -> Result<()> {
         .diff_context
         .or(config.diff_context)
         .unwrap_or(DEFAULT_DIFF_CONTEXT);
+    let syntax_theme = resolve_syntax_theme(
+        cli.theme.as_deref(),
+        config.syntax_theme.as_deref(),
+        config.syntax_colors.as_ref(),
+    )?;
 
     let (progress_tx, progress_rx) = mpsc::channel();
-    let binary1 = cli.binary1.clone();
-    let binary2 = cli.binary2.clone();
-    let binary_one_label = format!("A {}", cli.binary1.display());
-    let binary_two_label = format!("B {}", cli.binary2.display());
+    let binary1 = binary1.to_path_buf();
+    let binary2 = binary2.to_path_buf();
+    let binary_one_label = format!("A {}", binary1.display());
+    let binary_two_label = format!("B {}", binary2.display());
+    let binary1_worker = binary1.clone();
+    let binary2_worker = binary2.clone();
     let objdump_one = objdump.clone();
     let progress_tx_one = progress_tx.clone();
     let progress_tx_two = progress_tx.clone();
@@ -67,13 +84,18 @@ fn main() -> Result<()> {
     let handle_one = thread::spawn(move || {
         analyze_binary(
             &objdump_one,
-            &binary1,
+            &binary1_worker,
             &binary_one_label,
             &progress_tx_one,
         )
     });
     let handle_two = thread::spawn(move || {
-        analyze_binary(&objdump, &binary2, &binary_two_label, &progress_tx_two)
+        analyze_binary(
+            &objdump,
+            &binary2_worker,
+            &binary_two_label,
+            &progress_tx_two,
+        )
     });
     drop(progress_tx);
 
@@ -96,8 +118,8 @@ fn main() -> Result<()> {
                 io::stdout(),
                 &comparisons,
                 cli.diff_mode,
-                &cli.binary1,
-                &cli.binary2,
+                &binary1,
+                &binary2,
             )?;
         } else {
             dump_comparisons(io::stdout(), &comparisons, cli.diff_mode)?;
@@ -117,6 +139,7 @@ fn main() -> Result<()> {
             editor,
             highlight_color,
             diff_context,
+            syntax_theme,
         },
     )?;
 
@@ -130,6 +153,32 @@ fn join_analysis(
     handle
         .join()
         .map_err(|_| anyhow!("worker thread for {label} panicked"))?
+}
+
+fn resolve_syntax_theme(
+    cli_theme: Option<&str>,
+    config_theme: Option<&str>,
+    color_overrides: Option<&SyntaxColorOverrides>,
+) -> Result<SyntaxTheme> {
+    let mut syntax_theme = SyntaxTheme::named(
+        cli_theme.or(config_theme).unwrap_or(DEFAULT_THEME_NAME),
+    )?;
+    if let Some(overrides) = color_overrides {
+        syntax_theme.apply_color_overrides(overrides);
+    }
+    Ok(syntax_theme)
+}
+
+fn required_binaries(cli: &Cli) -> (&Path, &Path) {
+    let binary1 = cli
+        .binary1
+        .as_deref()
+        .expect("clap should require binary1 unless --list-themes");
+    let binary2 = cli
+        .binary2
+        .as_deref()
+        .expect("clap should require binary2 unless --list-themes");
+    (binary1, binary2)
 }
 
 fn select_objdump(configured: Option<&Path>) -> Result<PathBuf> {

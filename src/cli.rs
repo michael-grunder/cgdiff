@@ -21,9 +21,11 @@ pub(crate) const DEFAULT_EDITOR: &str = "nvim -d {file1} {file2}";
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Cli {
     /// First binary to compare.
-    pub(crate) binary1: PathBuf,
+    #[arg(required_unless_present = "list_themes")]
+    pub(crate) binary1: Option<PathBuf>,
     /// Second binary to compare.
-    pub(crate) binary2: PathBuf,
+    #[arg(required_unless_present = "list_themes")]
+    pub(crate) binary2: Option<PathBuf>,
     /// Path to objdump program.
     #[arg(short = 'o', long = "objdump")]
     pub(crate) objdump: Option<PathBuf>,
@@ -36,6 +38,12 @@ pub(crate) struct Cli {
     /// Unchanged lines kept around changes in side-by-side diffs.
     #[arg(long = "diff-context")]
     pub(crate) diff_context: Option<usize>,
+    /// Syntax highlighting theme used in the built-in diff viewer.
+    #[arg(long = "theme")]
+    pub(crate) theme: Option<String>,
+    /// List available syntax highlighting themes with a sample snippet.
+    #[arg(long = "list-themes")]
+    pub(crate) list_themes: bool,
     /// Include functions that only exist in one binary in the TUI.
     #[arg(long = "include-unique", alias = "include-unique-functions")]
     pub(crate) include_unique_functions: bool,

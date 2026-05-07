@@ -115,28 +115,38 @@ objdump = "/usr/bin/llvm-objdump"
 editor = "vimdiff {file1} {file2}"
 diff_context = 6
 highlight_color = "blue"
+theme = "default"
+
+[syntax_colors]
+mnemonic = "yellow"
 ```
 
 `diff_context` controls how many unchanged lines the built-in side-by-side diff
 keeps around changes before folding larger identical regions.
 Set `highlight_color = "none"` to disable the TUI row highlight background.
+`theme` selects the built-in syntax highlighting color scheme. Use
+`cgdiff --list-themes` to preview available themes. Per-token overrides can be
+set in `[syntax_colors]` using `address`, `bytes`, `label`, `mnemonic`,
+`register`, `immediate`, `memory`, `symbol`, `comment`, or `plain`.
 The repository includes a commented [`cgdiff.toml`](cgdiff.toml) example with
 the supported color names.
 
 ## Options
 
 ```text
-Usage: cgdiff [OPTIONS] <BINARY1> <BINARY2>
+Usage: cgdiff [OPTIONS] [BINARY1] [BINARY2]
 
 Arguments:
-  <BINARY1>  First binary to compare
-  <BINARY2>  Second binary to compare
+  [BINARY1]  First binary to compare
+  [BINARY2]  Second binary to compare
 
 Options:
   -o, --objdump <OBJDUMP>            Path to objdump program
   -e, --editor <EDITOR>              Command used to launch the diff editor
   -d, --diff-mode <DIFF_MODE>        Sort mode: combined, count, or order
       --diff-context <DIFF_CONTEXT>  Unchanged side-by-side context lines
+      --theme <THEME>                Syntax highlighting theme for built-in diffs
+      --list-themes                  Preview available syntax highlighting themes
       --include-unique               Include functions only present in one binary
       --include-identical            Include identical or perfect-score functions
       --include <INCLUDE>            Include by substring or `/regex/`

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added side-by-side layout mode for the built-in TUI diff viewer.
 - Added folding for long unchanged side-by-side diff regions, configurable
   with `diff_context` or `--diff-context`.
+- Added configurable syntax highlighting themes, per-token color overrides,
+  and `--list-themes` previews.
 
 ### Documentation
 

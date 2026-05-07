@@ -21,6 +21,7 @@ use crate::output::{
     PreparedComparison, dump_comparison_diff, dump_comparisons,
     temp_function_component, write_temp_disassembly,
 };
+use crate::theme::SyntaxTheme;
 use crate::tui::{App, AppOptions};
 use clap::Parser;
 use ratatui::text::Line;
@@ -76,6 +77,25 @@ fn parses_diff_context_option() {
             .expect("expected diff context option to parse");
 
     assert_eq!(cli.diff_context, Some(3));
+}
+
+#[test]
+fn parses_list_themes_without_binaries() {
+    let cli = Cli::try_parse_from(["cgdiff", "--list-themes"])
+        .expect("expected --list-themes without binaries to parse");
+
+    assert!(cli.list_themes);
+    assert!(cli.binary1.is_none());
+    assert!(cli.binary2.is_none());
+}
+
+#[test]
+fn parses_theme_option() {
+    let cli =
+        Cli::try_parse_from(["cgdiff", "--theme", "monokai", "old", "new"])
+            .expect("expected theme option to parse");
+
+    assert_eq!(cli.theme.as_deref(), Some("monokai"));
 }
 
 #[test]
@@ -1076,12 +1096,17 @@ fn visible_names(app: &App) -> Vec<String> {
 #[test]
 fn parses_config_values() {
     let config = parse_config(
-        r#"
+        r##"
 objdump = "/usr/bin/llvm-objdump"
 editor = "vimdiff {file1} {file2}"
 diff_context = 4
 highlight_color = "light-blue"
-"#,
+theme = "monokai"
+
+[syntax_colors]
+mnemonic = "light-red"
+comment = "#112233"
+"##,
     )
     .expect("expected config to parse");
 
@@ -1094,6 +1119,19 @@ highlight_color = "light-blue"
     assert_eq!(
         config.highlight_color,
         Some(HighlightColor::Color(ratatui::style::Color::LightBlue))
+    );
+    assert_eq!(config.syntax_theme.as_deref(), Some("monokai"));
+    let syntax_colors = config
+        .syntax_colors
+        .as_ref()
+        .expect("expected syntax color overrides");
+    assert_eq!(
+        syntax_colors.color(TokenClass::Mnemonic),
+        Some(ratatui::style::Color::LightRed)
+    );
+    assert_eq!(
+        syntax_colors.color(TokenClass::Comment),
+        Some(ratatui::style::Color::Rgb(0x11, 0x22, 0x33))
     );
 }
 
@@ -1244,6 +1282,7 @@ fn default_app_options() -> AppOptions {
         initial_include_query: String::new(),
         highlight_color: default_highlight(),
         diff_context: DEFAULT_DIFF_CONTEXT,
+        syntax_theme: SyntaxTheme::default_theme(),
     }
 }
 

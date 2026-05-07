@@ -27,6 +27,7 @@ use crate::output::{
     PreparedComparison, comparison_table_headers, comparison_table_row,
     comparison_table_shows_presence_columns, sort_comparisons,
 };
+use crate::theme::SyntaxTheme;
 
 const EDITOR_FILE1_PLACEHOLDER: &str = "{file1}";
 const EDITOR_FILE2_PLACEHOLDER: &str = "{file2}";
@@ -80,9 +81,10 @@ pub(crate) struct App {
     search_state: Option<SearchState>,
     highlight_color: HighlightColor,
     diff_context: usize,
+    syntax_theme: SyntaxTheme,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct TuiOptions<'a> {
     pub(crate) diff_mode: DiffMode,
     pub(crate) include_unique_functions: bool,
@@ -92,6 +94,7 @@ pub(crate) struct TuiOptions<'a> {
     pub(crate) editor: &'a str,
     pub(crate) highlight_color: HighlightColor,
     pub(crate) diff_context: usize,
+    pub(crate) syntax_theme: SyntaxTheme,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +106,7 @@ pub(crate) struct AppOptions {
     pub(crate) initial_include_query: String,
     pub(crate) highlight_color: HighlightColor,
     pub(crate) diff_context: usize,
+    pub(crate) syntax_theme: SyntaxTheme,
 }
 
 impl App {
@@ -131,6 +135,7 @@ impl App {
             search_state: None,
             highlight_color: options.highlight_color,
             diff_context: options.diff_context,
+            syntax_theme: options.syntax_theme,
         };
         app.rebuild_filter(None);
         if !app.filtered_indices.is_empty() {
@@ -190,7 +195,11 @@ impl App {
 
     pub(crate) fn open_diff(&mut self) {
         if let Some(diff_view) = self.selected().map(|selection| {
-            DiffView::from_selection_with_context(selection, self.diff_context)
+            DiffView::from_selection_with_theme(
+                selection,
+                self.diff_context,
+                self.syntax_theme.clone(),
+            )
         }) {
             self.diff_view = Some(diff_view);
             self.overlay = Some(Overlay::Diff);
@@ -444,6 +453,7 @@ pub(crate) fn run_tui(
             initial_include_query: options.initial_include_query.to_owned(),
             highlight_color: options.highlight_color,
             diff_context: options.diff_context,
+            syntax_theme: options.syntax_theme,
         },
     );
 

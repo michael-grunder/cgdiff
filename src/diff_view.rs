@@ -5,6 +5,8 @@ use ratatui::text::{Line, Span};
 use similar::{ChangeTag, DiffTag, TextDiff};
 
 use crate::output::PreparedComparison;
+use crate::theme::SyntaxTheme;
+pub(crate) use crate::theme::TokenClass;
 
 const DIFF_PREFIX_WIDTH: usize = 2;
 const SIDE_BY_SIDE_GUTTER_WIDTH: usize = 3;
@@ -18,6 +20,7 @@ pub(crate) struct DiffView {
     mode: DiffViewMode,
     scroll: u16,
     horizontal_scroll: u16,
+    syntax_theme: SyntaxTheme,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,20 +51,6 @@ enum DiffLineKind {
     ChangedRemoved,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TokenClass {
-    Address,
-    Bytes,
-    Label,
-    Mnemonic,
-    Register,
-    Immediate,
-    Memory,
-    Symbol,
-    Comment,
-    Plain,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Token {
     pub(crate) class: TokenClass,
@@ -69,9 +58,22 @@ pub(crate) struct Token {
 }
 
 impl DiffView {
+    #[cfg(test)]
     pub(crate) fn from_selection_with_context(
         selection: &PreparedComparison,
         diff_context: usize,
+    ) -> Self {
+        Self::from_selection_with_theme(
+            selection,
+            diff_context,
+            SyntaxTheme::default_theme(),
+        )
+    }
+
+    pub(crate) fn from_selection_with_theme(
+        selection: &PreparedComparison,
+        diff_context: usize,
+        syntax_theme: SyntaxTheme,
     ) -> Self {
         let left = selection.comparison.function1.as_ref().map_or_else(
             || format!("missing function: {}\n", selection.comparison.name),
@@ -89,6 +91,7 @@ impl DiffView {
             mode: DiffViewMode::SideBySide,
             scroll: 0,
             horizontal_scroll: 0,
+            syntax_theme,
         }
     }
 
@@ -148,7 +151,7 @@ impl DiffView {
 
         self.stacked_lines
             .iter()
-            .map(DiffDisplayLine::render)
+            .map(|line| line.render(&self.syntax_theme))
             .collect()
     }
 
@@ -176,7 +179,9 @@ impl DiffView {
         let horizontal_scroll = usize::from(self.horizontal_scroll);
         self.side_by_side_lines
             .iter()
-            .map(|line| line.render(text_width, horizontal_scroll))
+            .map(|line| {
+                line.render(text_width, horizontal_scroll, &self.syntax_theme)
+            })
             .collect()
     }
 }
@@ -414,12 +419,13 @@ fn diff_line_kind(
 }
 
 impl DiffDisplayLine {
-    fn render(&self) -> Line<'static> {
+    fn render(&self, syntax_theme: &SyntaxTheme) -> Line<'static> {
         let mut spans = Vec::new();
         spans.push(Span::styled(self.kind.prefix(), self.kind.prefix_style()));
         spans.extend(highlight_asm_with_background(
             &self.text,
             self.kind.background(),
+            syntax_theme,
         ));
         Line::from(spans)
     }
@@ -430,18 +436,21 @@ impl SideBySideLine {
         &self,
         text_width: usize,
         horizontal_scroll: usize,
+        syntax_theme: &SyntaxTheme,
     ) -> Line<'static> {
         let mut spans = Vec::new();
         spans.extend(render_side_by_side_column(
             self.left.as_ref(),
             text_width,
             horizontal_scroll,
+            syntax_theme,
         ));
         spans.push(Span::styled(" | ", Style::new().fg(Color::DarkGray)));
         spans.extend(render_side_by_side_column(
             self.right.as_ref(),
             text_width,
             horizontal_scroll,
+            syntax_theme,
         ));
         Line::from(spans)
     }
@@ -496,6 +505,7 @@ fn render_side_by_side_column(
     line: Option<&DiffDisplayLine>,
     text_width: usize,
     horizontal_scroll: usize,
+    syntax_theme: &SyntaxTheme,
 ) -> Vec<Span<'static>> {
     let Some(line) = line else {
         return vec![
@@ -512,6 +522,7 @@ fn render_side_by_side_column(
     spans.extend(highlight_asm_with_background(
         &visible_text,
         line.kind.background(),
+        syntax_theme,
     ));
     if padding_width > 0 {
         spans.push(Span::styled(
@@ -529,13 +540,14 @@ fn visible_text(text: &str, start: usize, width: usize) -> String {
 fn highlight_asm_with_background(
     text: &str,
     background: Option<Color>,
+    syntax_theme: &SyntaxTheme,
 ) -> Vec<Span<'static>> {
     tokenize_asm(text)
         .into_iter()
         .map(|token| {
             Span::styled(
                 token.text,
-                apply_background(token_style(token.class), background),
+                apply_background(syntax_theme.style(token.class), background),
             )
         })
         .collect()
@@ -795,26 +807,6 @@ fn push_token(tokens: &mut Vec<Token>, class: TokenClass, text: &str) {
         class,
         text: text.to_owned(),
     });
-}
-
-const fn token_style(class: TokenClass) -> Style {
-    match class {
-        TokenClass::Address | TokenClass::Comment => {
-            Style::new().fg(Color::DarkGray)
-        }
-        TokenClass::Bytes => Style::new().fg(Color::Gray),
-        TokenClass::Label => {
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        }
-        TokenClass::Mnemonic => {
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        }
-        TokenClass::Register => Style::new().fg(Color::LightBlue),
-        TokenClass::Immediate => Style::new().fg(Color::LightMagenta),
-        TokenClass::Memory => Style::new().fg(Color::LightCyan),
-        TokenClass::Symbol => Style::new().fg(Color::LightGreen),
-        TokenClass::Plain => Style::new(),
-    }
 }
 
 fn apply_background(style: Style, background: Option<Color>) -> Style {
