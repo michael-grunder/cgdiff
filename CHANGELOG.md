@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalized disassembly.
 - Added a built-in syntax-highlighted TUI diff viewer for selected functions,
   while preserving external diff editor handoff with `e`.
+- Added side-by-side layout mode for the built-in TUI diff viewer.
 
 ### Documentation
 

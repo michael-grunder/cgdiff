@@ -242,6 +242,12 @@ impl App {
         }
     }
 
+    pub(crate) const fn toggle_diff_view_mode(&mut self) {
+        if let Some(diff_view) = self.diff_view.as_mut() {
+            diff_view.toggle_mode();
+        }
+    }
+
     pub(crate) fn start_search(&mut self) {
         if matches!(self.overlay, Some(Overlay::Aggregates)) {
             self.start_filter_edit(SearchMode::Aggregates);
@@ -528,6 +534,9 @@ const fn handle_diff_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Right | KeyCode::Char('l') => app.scroll_diff_right(4),
         KeyCode::Left | KeyCode::Char('h') => app.scroll_diff_left(4),
         KeyCode::Home => app.reset_diff_horizontal_scroll(),
+        KeyCode::Tab | KeyCode::Char('s' | 'S') => {
+            app.toggle_diff_view_mode();
+        }
         _ => return false,
     }
 
@@ -878,6 +887,7 @@ fn draw_diff_view(
         .split(area);
 
     let title = diff_view.map_or("Diff", DiffView::title);
+    let mode = diff_view.map_or("none", DiffView::mode_label);
     let header = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(
@@ -887,23 +897,28 @@ fn draw_diff_view(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
+            Span::raw(format!("view: {mode}")),
+            Span::raw("  "),
             Span::raw("Enter returns to the function list"),
         ]),
-        Line::from("j/k scroll  h/l pan  PgUp/PgDn page  Home left edge  e editor  q/Esc close"),
+        Line::from("j/k scroll  h/l pan  PgUp/PgDn page  Home left edge  s/Tab split view  e editor  q/Esc close"),
     ])
     .block(Block::default().title("Built-in diff").borders(Borders::ALL));
     frame.render_widget(header, vertical[0]);
 
+    let content_width = vertical[1].width.saturating_sub(2);
     let (lines, scroll) = diff_view.map_or_else(
         || (vec![Line::from("No selected function.")], (0, 0)),
-        |diff_view| (diff_view.rendered_lines(), diff_view.scroll()),
+        |diff_view| {
+            (diff_view.rendered_lines(content_width), diff_view.scroll())
+        },
     );
     let diff = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL))
         .scroll(scroll);
     frame.render_widget(diff, vertical[1]);
 
-    let footer = Paragraph::new("legend: + added  - removed  yellow changed  syntax colors assembly tokens")
+    let footer = Paragraph::new("legend: + added  - removed  yellow changed/replaced  side-by-side panes scroll together")
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, vertical[2]);
 }
@@ -1018,6 +1033,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("Enter: open built-in syntax highlighted diff"),
         Line::from("e: open configured diff editor"),
         Line::from("j/k/h/l/PgUp/PgDn/Home: navigate built-in diff"),
+        Line::from("s / Tab: toggle built-in diff between stacked and side-by-side"),
         Line::from(
             "Default view hides unique functions and shared functions that are identical or score 1.000.",
         ),

@@ -6,7 +6,7 @@ use crate::compare::{
     weighted_jaccard,
 };
 use crate::config::{HighlightColor, parse_config};
-use crate::diff_view::{TokenClass, tokenize_asm};
+use crate::diff_view::{DiffView, TokenClass, tokenize_asm};
 use crate::disassembly::{
     BinaryAnalysis, FunctionAggregates, FunctionBuilder, FunctionDisassembly,
     ParsedInstruction, TargetArchitecture, build_objdump_command_for_arch,
@@ -21,6 +21,7 @@ use crate::output::{
 };
 use crate::tui::App;
 use clap::Parser;
+use ratatui::text::Line;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Write;
@@ -960,6 +961,53 @@ fn tokenizes_labels_as_labels() {
     let tokens = tokenize_asm(".L0001:");
 
     assert_eq!(tokens[0].class, TokenClass::Label);
+}
+
+#[test]
+fn side_by_side_diff_pairs_replacements_and_insertions() {
+    let mut prepared = prepared_comparison("side", 0.1);
+    let left_rendered = "<side>:\n    mov rax, rbx\n    add rax, 1\n    ret\n";
+    let right_rendered =
+        "<side>:\n    mov rax, rbx\n    sub rax, 1\n    nop\n    ret\n";
+    prepared
+        .comparison
+        .function1
+        .as_mut()
+        .expect("left function should exist")
+        .rendered = left_rendered.to_owned();
+    prepared
+        .comparison
+        .function2
+        .as_mut()
+        .expect("right function should exist")
+        .rendered = right_rendered.to_owned();
+
+    let mut view = DiffView::from_selection(&prepared);
+    assert_eq!(view.mode_label(), "stacked");
+    view.toggle_mode();
+
+    let lines = view
+        .rendered_lines(80)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>();
+
+    assert_eq!(view.mode_label(), "side-by-side");
+    assert!(lines.iter().any(|line| {
+        line.contains("-     add rax, 1") && line.contains("+     sub rax, 1")
+    }));
+    assert!(lines.iter().any(|line| line.contains("| +     nop")));
+
+    view.scroll_right(4);
+    assert_eq!(view.scroll(), (0, 0));
+    assert!(line_text(&view.rendered_lines(80)[2]).contains("- add rax, 1"));
+}
+
+fn line_text(line: &Line<'static>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 fn visible_names(app: &App) -> Vec<String> {

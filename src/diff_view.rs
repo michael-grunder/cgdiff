@@ -2,22 +2,39 @@ use std::sync::LazyLock;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use similar::{ChangeTag, TextDiff};
+use similar::{ChangeTag, DiffTag, TextDiff};
 
 use crate::output::PreparedComparison;
+
+const DIFF_PREFIX_WIDTH: usize = 2;
+const SIDE_BY_SIDE_GUTTER_WIDTH: usize = 3;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DiffView {
     title: String,
-    lines: Vec<DiffDisplayLine>,
+    stacked_lines: Vec<DiffDisplayLine>,
+    side_by_side_lines: Vec<SideBySideLine>,
+    mode: DiffViewMode,
     scroll: u16,
     horizontal_scroll: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiffViewMode {
+    Stacked,
+    SideBySide,
 }
 
 #[derive(Clone, Debug)]
 struct DiffDisplayLine {
     kind: DiffLineKind,
     text: String,
+}
+
+#[derive(Clone, Debug)]
+struct SideBySideLine {
+    left: Option<DiffDisplayLine>,
+    right: Option<DiffDisplayLine>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,7 +79,9 @@ impl DiffView {
 
         Self {
             title: format!("Diff {}", selection.comparison.name),
-            lines: diff_lines(&left, &right),
+            stacked_lines: diff_lines(&left, &right),
+            side_by_side_lines: side_by_side_lines(&left, &right),
+            mode: DiffViewMode::Stacked,
             scroll: 0,
             horizontal_scroll: 0,
         }
@@ -73,7 +92,21 @@ impl DiffView {
     }
 
     pub(crate) const fn scroll(&self) -> (u16, u16) {
-        (self.scroll, self.horizontal_scroll)
+        match self.mode {
+            DiffViewMode::Stacked => (self.scroll, self.horizontal_scroll),
+            DiffViewMode::SideBySide => (self.scroll, 0),
+        }
+    }
+
+    pub(crate) const fn mode_label(&self) -> &'static str {
+        self.mode.label()
+    }
+
+    pub(crate) const fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            DiffViewMode::Stacked => DiffViewMode::SideBySide,
+            DiffViewMode::SideBySide => DiffViewMode::Stacked,
+        };
     }
 
     pub(crate) const fn scroll_down(&mut self, amount: u16) {
@@ -96,12 +129,50 @@ impl DiffView {
         self.horizontal_scroll = 0;
     }
 
-    pub(crate) fn rendered_lines(&self) -> Vec<Line<'static>> {
-        if self.lines.is_empty() {
+    pub(crate) fn rendered_lines(&self, width: u16) -> Vec<Line<'static>> {
+        match self.mode {
+            DiffViewMode::Stacked => self.rendered_stacked_lines(),
+            DiffViewMode::SideBySide => self.rendered_side_by_side_lines(width),
+        }
+    }
+
+    fn rendered_stacked_lines(&self) -> Vec<Line<'static>> {
+        if self.stacked_lines.is_empty() {
             return vec![Line::from("No normalized disassembly differences.")];
         }
 
-        self.lines.iter().map(DiffDisplayLine::render).collect()
+        self.stacked_lines
+            .iter()
+            .map(DiffDisplayLine::render)
+            .collect()
+    }
+
+    fn rendered_side_by_side_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.side_by_side_lines.is_empty() {
+            return vec![Line::from("No normalized disassembly differences.")];
+        }
+
+        let width = usize::from(width);
+        let fixed_width = (DIFF_PREFIX_WIDTH * 2) + SIDE_BY_SIDE_GUTTER_WIDTH;
+        let Some(text_width) =
+            width.checked_sub(fixed_width).map(|width| width / 2)
+        else {
+            return vec![Line::from(
+                "Terminal is too narrow for side-by-side diff.",
+            )];
+        };
+
+        if text_width == 0 {
+            return vec![Line::from(
+                "Terminal is too narrow for side-by-side diff.",
+            )];
+        }
+
+        let horizontal_scroll = usize::from(self.horizontal_scroll);
+        self.side_by_side_lines
+            .iter()
+            .map(|line| line.render(text_width, horizontal_scroll))
+            .collect()
     }
 }
 
@@ -119,11 +190,81 @@ fn diff_lines(left: &str, right: &str) -> Vec<DiffDisplayLine> {
     changes
         .iter()
         .enumerate()
-        .map(|(index, (tag, text))| DiffDisplayLine {
-            kind: diff_line_kind(&changes, index, *tag),
-            text: text.clone(),
+        .map(|(index, (tag, text))| {
+            display_line(diff_line_kind(&changes, index, *tag), text)
         })
         .collect()
+}
+
+fn side_by_side_lines(left: &str, right: &str) -> Vec<SideBySideLine> {
+    let diff = TextDiff::from_lines(left, right);
+    let old_lines = diff.old_slices();
+    let new_lines = diff.new_slices();
+    let mut lines = Vec::new();
+
+    for op in diff.ops() {
+        let (tag, old_range, new_range) = op.as_tag_tuple();
+        match tag {
+            DiffTag::Equal => {
+                lines.extend(old_range.zip(new_range).map(|(old, new)| {
+                    SideBySideLine {
+                        left: Some(display_line(
+                            DiffLineKind::Context,
+                            old_lines[old],
+                        )),
+                        right: Some(display_line(
+                            DiffLineKind::Context,
+                            new_lines[new],
+                        )),
+                    }
+                }));
+            }
+            DiffTag::Delete => {
+                lines.extend(old_range.map(|old| SideBySideLine {
+                    left: Some(display_line(
+                        DiffLineKind::Removed,
+                        old_lines[old],
+                    )),
+                    right: None,
+                }));
+            }
+            DiffTag::Insert => {
+                lines.extend(new_range.map(|new| SideBySideLine {
+                    left: None,
+                    right: Some(display_line(
+                        DiffLineKind::Added,
+                        new_lines[new],
+                    )),
+                }));
+            }
+            DiffTag::Replace => {
+                let old_lines = &old_lines[old_range];
+                let new_lines = &new_lines[new_range];
+                let line_count = old_lines.len().max(new_lines.len());
+                lines.extend((0..line_count).map(|index| SideBySideLine {
+                    left: old_lines.get(index).map(|line| {
+                        display_line(DiffLineKind::ChangedRemoved, line)
+                    }),
+                    right: new_lines.get(index).map(|line| {
+                        display_line(DiffLineKind::ChangedAdded, line)
+                    }),
+                }));
+            }
+        }
+    }
+
+    lines
+}
+
+fn display_line(kind: DiffLineKind, text: &str) -> DiffDisplayLine {
+    DiffDisplayLine {
+        kind,
+        text: trim_diff_line(text).to_owned(),
+    }
+}
+
+fn trim_diff_line(text: &str) -> &str {
+    text.trim_end_matches(['\r', '\n'])
 }
 
 fn diff_line_kind(
@@ -172,6 +313,37 @@ impl DiffDisplayLine {
     }
 }
 
+impl SideBySideLine {
+    fn render(
+        &self,
+        text_width: usize,
+        horizontal_scroll: usize,
+    ) -> Line<'static> {
+        let mut spans = Vec::new();
+        spans.extend(render_side_by_side_column(
+            self.left.as_ref(),
+            text_width,
+            horizontal_scroll,
+        ));
+        spans.push(Span::styled(" | ", Style::new().fg(Color::DarkGray)));
+        spans.extend(render_side_by_side_column(
+            self.right.as_ref(),
+            text_width,
+            horizontal_scroll,
+        ));
+        Line::from(spans)
+    }
+}
+
+impl DiffViewMode {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Stacked => "stacked",
+            Self::SideBySide => "side-by-side",
+        }
+    }
+}
+
 impl DiffLineKind {
     const fn prefix(self) -> &'static str {
         match self {
@@ -206,6 +378,40 @@ impl DiffLineKind {
             }
         }
     }
+}
+
+fn render_side_by_side_column(
+    line: Option<&DiffDisplayLine>,
+    text_width: usize,
+    horizontal_scroll: usize,
+) -> Vec<Span<'static>> {
+    let Some(line) = line else {
+        return vec![
+            Span::styled("  ", Style::new().fg(Color::DarkGray)),
+            Span::raw(" ".repeat(text_width)),
+        ];
+    };
+
+    let visible_text = visible_text(&line.text, horizontal_scroll, text_width);
+    let visible_width = visible_text.chars().count();
+    let padding_width = text_width.saturating_sub(visible_width);
+    let mut spans = Vec::new();
+    spans.push(Span::styled(line.kind.prefix(), line.kind.prefix_style()));
+    spans.extend(highlight_asm_with_background(
+        &visible_text,
+        line.kind.background(),
+    ));
+    if padding_width > 0 {
+        spans.push(Span::styled(
+            " ".repeat(padding_width),
+            apply_background(Style::new(), line.kind.background()),
+        ));
+    }
+    spans
+}
+
+fn visible_text(text: &str, start: usize, width: usize) -> String {
+    text.chars().skip(start).take(width).collect()
 }
 
 fn highlight_asm_with_background(
