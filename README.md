@@ -7,6 +7,8 @@ streams are, and presents the most different functions first.
 The default interface is an interactive terminal UI. A `--stdio` mode is also
 available for scripts or quick checks.
 
+![cgdiff TUI demo](demo/example.gif)
+
 ## Features
 
 - Compares executables or shared objects with `llvm-objdump` or GNU `objdump`.
