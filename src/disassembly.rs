@@ -33,6 +33,10 @@ static RIP_RELATIVE_OPERAND_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\[\s*rip\s*[+-]\s*(?:0x[0-9a-fA-F]+|[0-9a-fA-F]+)\s*\]")
         .expect("RIP-relative operand regex must compile")
 });
+static MEMORY_OPERAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[[^\]]+\]|\([^)]*\)")
+        .expect("memory operand regex must compile")
+});
 
 #[derive(Clone, Debug)]
 pub(crate) struct BinaryAnalysis {
@@ -43,13 +47,57 @@ pub(crate) struct BinaryAnalysis {
 pub(crate) struct FunctionDisassembly {
     pub(crate) instructions: Vec<String>,
     pub(crate) normalized_instructions: Vec<String>,
+    pub(crate) aggregates: FunctionAggregates,
     pub(crate) rendered: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FunctionAggregates {
+    pub(crate) instructions_total: usize,
+    pub(crate) bytes_total: usize,
+    pub(crate) unique_mnemonics: usize,
+    pub(crate) calls: usize,
+    pub(crate) direct_calls: usize,
+    pub(crate) indirect_calls: usize,
+    pub(crate) branches_total: usize,
+    pub(crate) conditional_branches: usize,
+    pub(crate) unconditional_branches: usize,
+    pub(crate) indirect_branches: usize,
+    pub(crate) returns: usize,
+    pub(crate) memory_operands_total: usize,
+    pub(crate) memory_loads: usize,
+    pub(crate) memory_stores: usize,
+    pub(crate) stack_loads: usize,
+    pub(crate) stack_stores: usize,
+    pub(crate) rip_relative_loads: usize,
+    pub(crate) rip_relative_stores: usize,
+    pub(crate) atomics: usize,
+    pub(crate) locked_ops: usize,
+    pub(crate) memory_barriers: usize,
+    pub(crate) integer_mul: usize,
+    pub(crate) integer_div: usize,
+    pub(crate) floating_point_ops: usize,
+    pub(crate) simd_vector_ops: usize,
+    pub(crate) pushes: usize,
+    pub(crate) pops: usize,
+    pub(crate) frame_setup_ops: usize,
+    pub(crate) register_moves: usize,
+    pub(crate) lea_ops: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MemoryAccess {
+    None,
+    Load,
+    Store,
+    LoadStore,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedInstruction {
     pub(crate) original_line: String,
     pub(crate) address: Option<u64>,
+    pub(crate) byte_count: Option<usize>,
     pub(crate) text: String,
 }
 
@@ -148,7 +196,6 @@ pub(crate) fn build_objdump_command_for_arch(
     command
         .arg("--disassemble")
         .arg("--demangle")
-        .arg("--no-show-raw-insn")
         .args(x86_intel_syntax_args(
             objdump,
             target_architecture,
@@ -407,6 +454,7 @@ pub(crate) fn finalize_function(
         .iter()
         .map(|instruction| instruction.text.clone())
         .collect::<Vec<_>>();
+    let aggregates = aggregate_function(&builder.instructions);
     let original_bytes = builder
         .instructions
         .iter()
@@ -446,6 +494,7 @@ pub(crate) fn finalize_function(
     FunctionDisassembly {
         instructions,
         normalized_instructions,
+        aggregates,
         rendered,
     }
 }
@@ -474,16 +523,19 @@ pub(crate) fn parse_instruction_line(line: &str) -> Option<ParsedInstruction> {
 
     let (address_text, remainder) = trimmed.split_once(':')?;
     let address = parse_hex_address(address_text)?;
-    let text = parse_instruction_remainder(remainder)?;
+    let (text, byte_count) = parse_instruction_remainder(remainder)?;
 
     Some(ParsedInstruction {
         original_line: line.to_owned(),
         address: Some(address),
+        byte_count,
         text,
     })
 }
 
-fn parse_instruction_remainder(remainder: &str) -> Option<String> {
+fn parse_instruction_remainder(
+    remainder: &str,
+) -> Option<(String, Option<usize>)> {
     let trimmed = remainder.trim_start();
     if trimmed.is_empty() {
         return None;
@@ -493,10 +545,15 @@ fn parse_instruction_remainder(remainder: &str) -> Option<String> {
         && is_raw_byte_column(first_column)
     {
         let instruction = rest.trim();
-        return (!instruction.is_empty()).then(|| instruction.to_owned());
+        return (!instruction.is_empty()).then(|| {
+            (
+                instruction.to_owned(),
+                Some(first_column.split_whitespace().count()),
+            )
+        });
     }
 
-    Some(trimmed.to_owned())
+    Some((trimmed.to_owned(), None))
 }
 
 fn is_raw_byte_column(column: &str) -> bool {
@@ -659,6 +716,387 @@ fn parse_direct_address_operand(operands: &str) -> Option<u64> {
 
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn aggregate_function(
+    instructions: &[ParsedInstruction],
+) -> FunctionAggregates {
+    let mut aggregates = FunctionAggregates {
+        instructions_total: instructions.len(),
+        bytes_total: instructions
+            .iter()
+            .filter_map(|instruction| instruction.byte_count)
+            .sum(),
+        ..FunctionAggregates::default()
+    };
+    let mut unique_mnemonics = HashSet::new();
+
+    for instruction in instructions {
+        let Some(mnemonic) = parse_instruction_mnemonic(&instruction.text)
+        else {
+            continue;
+        };
+        let mnemonic = mnemonic.to_ascii_lowercase();
+        unique_mnemonics.insert(mnemonic.clone());
+        let operands = instruction.text[mnemonic.len()..].trim();
+
+        aggregate_control_flow(&mut aggregates, &mnemonic, operands);
+        aggregate_memory(&mut aggregates, &mnemonic, operands);
+        aggregate_operation_classes(&mut aggregates, &mnemonic, operands);
+        aggregate_stack_and_moves(&mut aggregates, &mnemonic, operands);
+    }
+
+    aggregates.unique_mnemonics = unique_mnemonics.len();
+    aggregates
+}
+
+fn aggregate_control_flow(
+    aggregates: &mut FunctionAggregates,
+    mnemonic: &str,
+    operands: &str,
+) {
+    if is_call_mnemonic(mnemonic) {
+        aggregates.calls += 1;
+        if is_indirect_control_flow(mnemonic, operands) {
+            aggregates.indirect_calls += 1;
+        } else {
+            aggregates.direct_calls += 1;
+        }
+        return;
+    }
+
+    if is_return_mnemonic(mnemonic) {
+        aggregates.returns += 1;
+        aggregates.branches_total += 1;
+        return;
+    }
+
+    if is_conditional_branch_mnemonic(mnemonic) {
+        aggregates.conditional_branches += 1;
+        aggregates.branches_total += 1;
+    } else if is_unconditional_branch_mnemonic(mnemonic) {
+        aggregates.unconditional_branches += 1;
+        aggregates.branches_total += 1;
+        if is_indirect_control_flow(mnemonic, operands) {
+            aggregates.indirect_branches += 1;
+        }
+    }
+}
+
+fn aggregate_memory(
+    aggregates: &mut FunctionAggregates,
+    mnemonic: &str,
+    operands: &str,
+) {
+    let access = memory_access(mnemonic, operands);
+    if access == MemoryAccess::None {
+        return;
+    }
+
+    aggregates.memory_operands_total +=
+        MEMORY_OPERAND_RE.find_iter(operands).count();
+    if matches!(access, MemoryAccess::Load | MemoryAccess::LoadStore) {
+        aggregates.memory_loads += 1;
+    }
+    if matches!(access, MemoryAccess::Store | MemoryAccess::LoadStore) {
+        aggregates.memory_stores += 1;
+    }
+
+    let operands = operands.to_ascii_lowercase();
+    let stack_relative = operands.contains("[rsp")
+        || operands.contains("[rbp")
+        || operands.contains("(%rsp")
+        || operands.contains("(%rbp")
+        || operands.contains("[sp")
+        || operands.contains(", sp")
+        || operands.contains("[x29")
+        || operands.contains("[fp");
+    let rip_relative = operands.contains("[rip") || operands.contains("(%rip");
+
+    if stack_relative
+        && matches!(access, MemoryAccess::Load | MemoryAccess::LoadStore)
+    {
+        aggregates.stack_loads += 1;
+    }
+    if stack_relative
+        && matches!(access, MemoryAccess::Store | MemoryAccess::LoadStore)
+    {
+        aggregates.stack_stores += 1;
+    }
+    if rip_relative
+        && matches!(access, MemoryAccess::Load | MemoryAccess::LoadStore)
+    {
+        aggregates.rip_relative_loads += 1;
+    }
+    if rip_relative
+        && matches!(access, MemoryAccess::Store | MemoryAccess::LoadStore)
+    {
+        aggregates.rip_relative_stores += 1;
+    }
+}
+
+fn aggregate_operation_classes(
+    aggregates: &mut FunctionAggregates,
+    mnemonic: &str,
+    operands: &str,
+) {
+    if mnemonic == "lock" || mnemonic.starts_with("lock") {
+        aggregates.locked_ops += 1;
+        aggregates.atomics += 1;
+    }
+    if matches!(
+        mnemonic,
+        "xadd"
+            | "xchg"
+            | "cmpxchg"
+            | "cmpxchg8b"
+            | "cmpxchg16b"
+            | "ldxr"
+            | "ldaxr"
+            | "stxr"
+            | "stlxr"
+    ) {
+        aggregates.atomics += 1;
+    }
+    if matches!(
+        mnemonic,
+        "mfence" | "lfence" | "sfence" | "dmb" | "dsb" | "isb"
+    ) {
+        aggregates.memory_barriers += 1;
+    }
+    if mnemonic.contains("mul") && !mnemonic.contains("fmul") {
+        aggregates.integer_mul += 1;
+    }
+    if mnemonic.contains("div") && !mnemonic.contains("fdiv") {
+        aggregates.integer_div += 1;
+    }
+    if is_floating_point_mnemonic(mnemonic) {
+        aggregates.floating_point_ops += 1;
+    }
+    if is_simd_vector_op(mnemonic, operands) {
+        aggregates.simd_vector_ops += 1;
+    }
+}
+
+fn aggregate_stack_and_moves(
+    aggregates: &mut FunctionAggregates,
+    mnemonic: &str,
+    operands: &str,
+) {
+    if mnemonic.starts_with("push")
+        || mnemonic == "stp" && operands.contains("sp")
+    {
+        aggregates.pushes += 1;
+    }
+    if mnemonic.starts_with("pop")
+        || mnemonic == "ldp" && operands.contains("sp")
+    {
+        aggregates.pops += 1;
+    }
+    if is_frame_setup_op(mnemonic, operands) {
+        aggregates.frame_setup_ops += 1;
+    }
+    if mnemonic == "lea" || mnemonic == "adrp" || mnemonic == "adr" {
+        aggregates.lea_ops += 1;
+    }
+    if is_register_move(mnemonic, operands) {
+        aggregates.register_moves += 1;
+    }
+}
+
+fn memory_access(mnemonic: &str, operands: &str) -> MemoryAccess {
+    if !MEMORY_OPERAND_RE.is_match(operands) {
+        return MemoryAccess::None;
+    }
+    if mnemonic.starts_with("push") {
+        return MemoryAccess::Store;
+    }
+    if mnemonic.starts_with("pop") {
+        return MemoryAccess::Load;
+    }
+    if mnemonic.starts_with("cmp")
+        || mnemonic.starts_with("test")
+        || mnemonic.starts_with("prefetch")
+    {
+        return MemoryAccess::Load;
+    }
+    if mnemonic.starts_with("str") || mnemonic == "stp" || mnemonic == "stur" {
+        return MemoryAccess::Store;
+    }
+    if mnemonic.starts_with("ldr") || mnemonic == "ldp" || mnemonic == "ldur" {
+        return MemoryAccess::Load;
+    }
+    if matches!(mnemonic, "xadd" | "xchg" | "cmpxchg")
+        || mnemonic.starts_with("lock")
+    {
+        return MemoryAccess::LoadStore;
+    }
+
+    let first_operand_is_memory = operands.split_once(',').map_or_else(
+        || MEMORY_OPERAND_RE.is_match(operands),
+        |(first, _)| MEMORY_OPERAND_RE.is_match(first),
+    );
+    if first_operand_is_memory && writes_first_operand(mnemonic) {
+        MemoryAccess::Store
+    } else {
+        MemoryAccess::Load
+    }
+}
+
+fn writes_first_operand(mnemonic: &str) -> bool {
+    mnemonic.starts_with("mov")
+        || mnemonic.starts_with("add")
+        || mnemonic.starts_with("sub")
+        || mnemonic.starts_with("and")
+        || mnemonic.starts_with("or")
+        || mnemonic.starts_with("xor")
+        || mnemonic.starts_with("inc")
+        || mnemonic.starts_with("dec")
+        || mnemonic.starts_with("sh")
+        || mnemonic.starts_with("sal")
+        || mnemonic.starts_with("sar")
+        || mnemonic.starts_with("rol")
+        || mnemonic.starts_with("ror")
+}
+
+fn is_call_mnemonic(mnemonic: &str) -> bool {
+    matches!(mnemonic, "call" | "callq" | "bl" | "blr")
+}
+
+fn is_return_mnemonic(mnemonic: &str) -> bool {
+    mnemonic.starts_with("ret")
+}
+
+fn is_conditional_branch_mnemonic(mnemonic: &str) -> bool {
+    (mnemonic.starts_with('j') && !matches!(mnemonic, "jmp" | "jmpq"))
+        || mnemonic.starts_with("b.")
+        || matches!(mnemonic, "cbz" | "cbnz" | "tbz" | "tbnz")
+}
+
+fn is_unconditional_branch_mnemonic(mnemonic: &str) -> bool {
+    matches!(mnemonic, "jmp" | "jmpq" | "b" | "br")
+}
+
+fn is_indirect_control_flow(mnemonic: &str, operands: &str) -> bool {
+    let operands = operands.trim().to_ascii_lowercase();
+    mnemonic == "blr"
+        || mnemonic == "br"
+        || operands.starts_with('*')
+        || MEMORY_OPERAND_RE.is_match(&operands)
+        || is_register_name(
+            operands.split_whitespace().next().unwrap_or_default(),
+        )
+}
+
+fn is_register_name(operand: &str) -> bool {
+    let operand = operand.trim_matches(|character: char| {
+        character == ',' || character == '[' || character == ']'
+    });
+    matches!(
+        operand,
+        "rax"
+            | "rbx"
+            | "rcx"
+            | "rdx"
+            | "rsi"
+            | "rdi"
+            | "rsp"
+            | "rbp"
+            | "eax"
+            | "ebx"
+            | "ecx"
+            | "edx"
+            | "esi"
+            | "edi"
+            | "esp"
+            | "ebp"
+            | "x0"
+            | "x1"
+            | "x2"
+            | "x3"
+            | "x4"
+            | "x5"
+            | "x6"
+            | "x7"
+            | "x8"
+            | "x9"
+            | "x10"
+            | "x11"
+            | "x12"
+            | "x13"
+            | "x14"
+            | "x15"
+            | "x16"
+            | "x17"
+            | "x18"
+            | "x19"
+            | "x20"
+            | "x21"
+            | "x22"
+            | "x23"
+            | "x24"
+            | "x25"
+            | "x26"
+            | "x27"
+            | "x28"
+            | "x29"
+            | "x30"
+    ) || operand.starts_with('r')
+        && operand[1..]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+}
+
+fn is_floating_point_mnemonic(mnemonic: &str) -> bool {
+    mnemonic.starts_with('f')
+        || mnemonic.starts_with("vadd")
+        || mnemonic.starts_with("vsub")
+        || mnemonic.starts_with("vmul")
+        || mnemonic.starts_with("vdiv")
+        || mnemonic.starts_with("addsd")
+        || mnemonic.starts_with("addss")
+        || mnemonic.starts_with("subsd")
+        || mnemonic.starts_with("subss")
+        || mnemonic.starts_with("mulsd")
+        || mnemonic.starts_with("mulss")
+        || mnemonic.starts_with("divsd")
+        || mnemonic.starts_with("divss")
+}
+
+fn is_simd_vector_op(mnemonic: &str, operands: &str) -> bool {
+    mnemonic.starts_with('v')
+        || operands.contains("xmm")
+        || operands.contains("ymm")
+        || operands.contains("zmm")
+        || operands.contains(".2")
+        || operands.contains(".4")
+        || operands.contains(".8")
+        || operands.contains(".16")
+}
+
+fn is_frame_setup_op(mnemonic: &str, operands: &str) -> bool {
+    let operands = collapse_whitespace(&operands.to_ascii_lowercase());
+    mnemonic.starts_with("push") && operands == "rbp"
+        || mnemonic == "mov" && operands == "rbp, rsp"
+        || mnemonic == "sub" && operands.starts_with("rsp,")
+        || mnemonic == "stp"
+            && operands.contains("x29")
+            && operands.contains("sp")
+        || mnemonic == "mov" && operands == "x29, sp"
+}
+
+fn is_register_move(mnemonic: &str, operands: &str) -> bool {
+    if !matches!(mnemonic, "mov" | "movq" | "movl" | "movw" | "movb" | "orr") {
+        return false;
+    }
+    let mut operands = operands.split(',').map(str::trim);
+    let Some(first) = operands.next() else {
+        return false;
+    };
+    let Some(second) = operands.next() else {
+        return false;
+    };
+    is_register_name(first) && is_register_name(second)
 }
 
 fn is_direct_control_flow_mnemonic(mnemonic: &str) -> bool {

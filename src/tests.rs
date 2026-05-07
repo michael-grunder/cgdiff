@@ -7,8 +7,8 @@ use crate::compare::{
 };
 use crate::config::{HighlightColor, parse_config};
 use crate::disassembly::{
-    BinaryAnalysis, FunctionBuilder, FunctionDisassembly, ParsedInstruction,
-    TargetArchitecture, build_objdump_command_for_arch,
+    BinaryAnalysis, FunctionAggregates, FunctionBuilder, FunctionDisassembly,
+    ParsedInstruction, TargetArchitecture, build_objdump_command_for_arch,
     detect_target_architecture, finalize_function, normalize_instruction_text,
     parse_function_header, parse_instruction_line, parse_instruction_mnemonic,
     parse_instruction_text,
@@ -81,6 +81,12 @@ fn parses_instruction_mnemonics() {
     let mnemonic =
         parse_instruction_mnemonic(&instruction).expect("expected mnemonic");
     assert_eq!(mnemonic, "mov");
+
+    let parsed = parse_instruction_line(
+        "   113d:\t48 89 e5             \tmov    %rsp,%rbp",
+    )
+    .expect("expected instruction");
+    assert_eq!(parsed.byte_count, Some(3));
 }
 
 #[test]
@@ -202,6 +208,49 @@ fn rendered_output_strips_instruction_addresses() {
 }
 
 #[test]
+fn finalizes_function_aggregates() {
+    let function = finalize_function(&function_builder(
+        "foo",
+        &[
+            parse_instruction_line("1000:\t55 \tpush rbp")
+                .expect("expected instruction"),
+            parse_instruction_line("1001:\t48 89 e5 \tmov rbp, rsp")
+                .expect("expected instruction"),
+            parse_instruction_line("1004:\te8 00 00 00 00 \tcall 0x2000 <bar>")
+                .expect("expected instruction"),
+            parse_instruction_line("1009:\tff d0 \tcall rax")
+                .expect("expected instruction"),
+            parse_instruction_line(
+                "100b:\t48 8b 05 00 00 00 00 \tmov rax, QWORD PTR [rip + 0x0]",
+            )
+            .expect("expected instruction"),
+            parse_instruction_line(
+                "1012:\t48 89 45 f8 \tmov QWORD PTR [rbp - 0x8], rax",
+            )
+            .expect("expected instruction"),
+            parse_instruction_line("1016:\t75 02 \tjne 0x101a <foo+0x1a>")
+                .expect("expected instruction"),
+            parse_instruction_line("1018:\tc3 \tret")
+                .expect("expected instruction"),
+        ],
+    ));
+
+    assert_eq!(function.aggregates.instructions_total, 8);
+    assert_eq!(function.aggregates.bytes_total, 25);
+    assert_eq!(function.aggregates.calls, 2);
+    assert_eq!(function.aggregates.direct_calls, 1);
+    assert_eq!(function.aggregates.indirect_calls, 1);
+    assert_eq!(function.aggregates.conditional_branches, 1);
+    assert_eq!(function.aggregates.returns, 1);
+    assert_eq!(function.aggregates.memory_loads, 1);
+    assert_eq!(function.aggregates.memory_stores, 1);
+    assert_eq!(function.aggregates.rip_relative_loads, 1);
+    assert_eq!(function.aggregates.stack_stores, 1);
+    assert_eq!(function.aggregates.frame_setup_ops, 2);
+    assert_eq!(function.aggregates.register_moves, 1);
+}
+
+#[test]
 fn identical_detection_ignores_moved_function_addresses() {
     let left = finalize_function(&function_builder(
         "foo",
@@ -236,7 +285,6 @@ fn builds_gnu_objdump_command_with_intel_syntax() {
         vec![
             OsString::from("--disassemble"),
             OsString::from("--demangle"),
-            OsString::from("--no-show-raw-insn"),
             OsString::from("-Mintel"),
             OsString::from("binary"),
         ]
@@ -258,7 +306,6 @@ fn builds_llvm_objdump_command_with_intel_syntax() {
         vec![
             OsString::from("--disassemble"),
             OsString::from("--demangle"),
-            OsString::from("--no-show-raw-insn"),
             OsString::from("--x86-asm-syntax=intel"),
             OsString::from("binary"),
         ]
@@ -280,7 +327,6 @@ fn omits_intel_syntax_for_aarch64_targets() {
         vec![
             OsString::from("--disassemble"),
             OsString::from("--demangle"),
-            OsString::from("--no-show-raw-insn"),
             OsString::from("binary"),
         ]
     );
@@ -301,7 +347,6 @@ fn omits_intel_syntax_on_aarch64_hosts() {
         vec![
             OsString::from("--disassemble"),
             OsString::from("--demangle"),
-            OsString::from("--no-show-raw-insn"),
             OsString::from("binary"),
         ]
     );
@@ -352,11 +397,13 @@ fn identifies_functions_present_in_both_binaries() {
         function1: Some(FunctionDisassembly {
             instructions: Vec::new(),
             normalized_instructions: Vec::new(),
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         function2: Some(FunctionDisassembly {
             instructions: Vec::new(),
             normalized_instructions: Vec::new(),
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         combined_score: 1.0,
@@ -368,6 +415,7 @@ fn identifies_functions_present_in_both_binaries() {
         function1: Some(FunctionDisassembly {
             instructions: Vec::new(),
             normalized_instructions: Vec::new(),
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         function2: None,
@@ -390,6 +438,7 @@ fn detects_identical_functions_from_normalized_instructions() {
                 "mov %rsp,%rbp".to_owned(),
                 "ret".to_owned(),
             ],
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         function2: Some(FunctionDisassembly {
@@ -398,6 +447,7 @@ fn detects_identical_functions_from_normalized_instructions() {
                 "mov %rsp,%rbp".to_owned(),
                 "ret".to_owned(),
             ],
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         combined_score: 1.0,
@@ -413,6 +463,7 @@ fn detects_identical_functions_from_normalized_instructions() {
                 "mov %rsp,%rbp".to_owned(),
                 "ret $0x8".to_owned(),
             ],
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         combined_score: 0.5,
@@ -436,6 +487,7 @@ fn treats_perfect_similarity_as_effectively_identical() {
                 "mov %rsp,%rbp".to_owned(),
                 "ret".to_owned(),
             ],
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         function2: Some(FunctionDisassembly {
@@ -444,6 +496,7 @@ fn treats_perfect_similarity_as_effectively_identical() {
                 "mov %rax,%rbx".to_owned(),
                 "ret".to_owned(),
             ],
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         combined_score: 1.0,
@@ -467,11 +520,13 @@ fn reports_left_and_right_op_counts() {
                 "ret".to_owned(),
             ],
             normalized_instructions: Vec::new(),
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         function2: Some(FunctionDisassembly {
             instructions: vec!["mov".to_owned(), "ret".to_owned()],
             normalized_instructions: Vec::new(),
+            aggregates: FunctionAggregates::default(),
             rendered: String::new(),
         }),
         combined_score: 0.0,
@@ -841,6 +896,7 @@ fn build_comparisons_hides_perfect_similarity_by_default() {
                     "mov %rsp,%rbp".to_owned(),
                     "ret".to_owned(),
                 ],
+                aggregates: FunctionAggregates::default(),
                 rendered: String::new(),
             },
         )]),
@@ -854,6 +910,7 @@ fn build_comparisons_hides_perfect_similarity_by_default() {
                     "mov %rax,%rbx".to_owned(),
                     "ret".to_owned(),
                 ],
+                aggregates: FunctionAggregates::default(),
                 rendered: String::new(),
             },
         )]),
@@ -968,6 +1025,7 @@ fn synthetic_function() -> FunctionDisassembly {
     FunctionDisassembly {
         instructions: vec!["mov".to_owned()],
         normalized_instructions: vec!["mov".to_owned()],
+        aggregates: FunctionAggregates::default(),
         rendered: "mov\n".to_owned(),
     }
 }
@@ -983,6 +1041,7 @@ fn parsed_instruction(address: u64, text: &str) -> ParsedInstruction {
     ParsedInstruction {
         original_line: format!("{address:x}:\t{text}"),
         address: Some(address),
+        byte_count: None,
         text: text.to_owned(),
     }
 }
@@ -1015,11 +1074,13 @@ fn prepared_comparison(name: &str, combined_score: f64) -> PreparedComparison {
             function1: Some(FunctionDisassembly {
                 instructions: vec!["mov".to_owned()],
                 normalized_instructions: vec!["mov".to_owned()],
+                aggregates: FunctionAggregates::default(),
                 rendered: format!("{name}\n"),
             }),
             function2: Some(FunctionDisassembly {
                 instructions: vec!["mov".to_owned()],
                 normalized_instructions: vec!["mov".to_owned()],
+                aggregates: FunctionAggregates::default(),
                 rendered: format!("{name}\n"),
             }),
             combined_score,

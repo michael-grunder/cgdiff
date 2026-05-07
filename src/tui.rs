@@ -20,6 +20,7 @@ use ratatui::widgets::{
 
 use crate::cli::DiffMode;
 use crate::config::HighlightColor;
+use crate::disassembly::FunctionAggregates;
 use crate::filter::SearchFilter;
 use crate::output::{
     PreparedComparison, comparison_table_headers, comparison_table_row,
@@ -32,18 +33,20 @@ const EDITOR_FILE2_PLACEHOLDER: &str = "{file2}";
 enum Overlay {
     Help,
     Info,
+    Aggregates,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SearchMode {
     Include,
     Exclude,
+    Aggregates,
 }
 
 impl SearchMode {
     const fn prompt(self) -> char {
         match self {
-            Self::Include => '/',
+            Self::Include | Self::Aggregates => '/',
             Self::Exclude => '!',
         }
     }
@@ -68,6 +71,9 @@ pub(crate) struct App {
     exclude_filter: SearchFilter,
     pub(crate) include_query: String,
     include_filter: SearchFilter,
+    aggregate_query: String,
+    aggregate_filter: SearchFilter,
+    aggregate_scroll: u16,
     search_state: Option<SearchState>,
     highlight_color: HighlightColor,
 }
@@ -107,6 +113,9 @@ impl App {
             exclude_filter: SearchFilter::Empty,
             include_query: initial_include_query,
             include_filter: SearchFilter::Empty,
+            aggregate_query: String::new(),
+            aggregate_filter: SearchFilter::Empty,
+            aggregate_scroll: 0,
             search_state: None,
             highlight_color,
         };
@@ -166,6 +175,16 @@ impl App {
         }
     }
 
+    pub(crate) fn toggle_aggregates(&mut self) {
+        if self.selected().is_some() {
+            self.aggregate_scroll = 0;
+            self.overlay = match self.overlay {
+                Some(Overlay::Aggregates) => None,
+                _ => Some(Overlay::Aggregates),
+            };
+        }
+    }
+
     pub(crate) const fn toggle_help(&mut self) {
         self.overlay = match self.overlay {
             Some(Overlay::Help) => None,
@@ -183,7 +202,11 @@ impl App {
     }
 
     pub(crate) fn start_search(&mut self) {
-        self.start_filter_edit(SearchMode::Include);
+        if matches!(self.overlay, Some(Overlay::Aggregates)) {
+            self.start_filter_edit(SearchMode::Aggregates);
+        } else {
+            self.start_filter_edit(SearchMode::Include);
+        }
     }
 
     pub(crate) fn start_exclude(&mut self) {
@@ -194,6 +217,7 @@ impl App {
         let query = match mode {
             SearchMode::Include => &self.include_query,
             SearchMode::Exclude => &self.exclude_query,
+            SearchMode::Aggregates => &self.aggregate_query,
         };
         self.search_state = Some(SearchState {
             mode,
@@ -231,6 +255,13 @@ impl App {
                 SearchMode::Exclude => {
                     self.exclude_query = state.buffer.clone();
                 }
+                SearchMode::Aggregates => {
+                    self.aggregate_query = state.buffer.clone();
+                    self.aggregate_filter =
+                        SearchFilter::compile(&self.aggregate_query);
+                    self.aggregate_scroll = 0;
+                    return;
+                }
             }
         }
         self.rebuild_filter(selected_name.as_deref());
@@ -249,6 +280,13 @@ impl App {
                 SearchMode::Exclude => {
                     self.exclude_query = state.previous_query;
                 }
+                SearchMode::Aggregates => {
+                    self.aggregate_query = state.previous_query;
+                    self.aggregate_filter =
+                        SearchFilter::compile(&self.aggregate_query);
+                    self.aggregate_scroll = 0;
+                    return;
+                }
             }
             self.rebuild_filter(None);
         }
@@ -260,7 +298,13 @@ impl App {
 
     pub(crate) fn search_prompt(&self) -> String {
         self.search_state.as_ref().map_or_else(
-            || self.include_query.clone(),
+            || {
+                if matches!(self.overlay, Some(Overlay::Aggregates)) {
+                    self.aggregate_query.clone()
+                } else {
+                    self.include_query.clone()
+                }
+            },
             |state| state.buffer.clone(),
         )
     }
@@ -272,11 +316,29 @@ impl App {
     }
 
     pub(crate) const fn search_error(&self) -> Option<&str> {
-        if let Some(message) = self.exclude_filter.error_message() {
-            Some(message)
-        } else {
-            self.include_filter.error_message()
+        if matches!(
+            self.search_state.as_ref(),
+            Some(SearchState {
+                mode: SearchMode::Aggregates,
+                ..
+            })
+        ) || matches!(self.overlay, Some(Overlay::Aggregates))
+        {
+            return self.aggregate_filter.error_message();
         }
+
+        match self.exclude_filter.error_message() {
+            Some(message) => Some(message),
+            None => self.include_filter.error_message(),
+        }
+    }
+
+    pub(crate) const fn scroll_aggregates_down(&mut self) {
+        self.aggregate_scroll = self.aggregate_scroll.saturating_add(1);
+    }
+
+    pub(crate) const fn scroll_aggregates_up(&mut self) {
+        self.aggregate_scroll = self.aggregate_scroll.saturating_sub(1);
     }
 
     pub(crate) const fn visible_count(&self) -> usize {
@@ -352,6 +414,22 @@ pub(crate) fn run_tui(
                                 app.should_quit = true;
                             }
                             KeyCode::Char('q') => app.should_quit = true,
+                            KeyCode::Down | KeyCode::Char('j')
+                                if matches!(
+                                    app.overlay,
+                                    Some(Overlay::Aggregates)
+                                ) =>
+                            {
+                                app.scroll_aggregates_down();
+                            }
+                            KeyCode::Up | KeyCode::Char('k')
+                                if matches!(
+                                    app.overlay,
+                                    Some(Overlay::Aggregates)
+                                ) =>
+                            {
+                                app.scroll_aggregates_up();
+                            }
                             KeyCode::Down | KeyCode::Char('j') => app.next(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous(),
                             KeyCode::Char('1') => {
@@ -361,6 +439,9 @@ pub(crate) fn run_tui(
                             KeyCode::Char('3') => app.resort(DiffMode::Order),
                             KeyCode::Char('i' | 'I') => {
                                 app.toggle_details();
+                            }
+                            KeyCode::Char('a' | 'A') => {
+                                app.toggle_aggregates();
                             }
                             KeyCode::Char('/') => app.start_search(),
                             KeyCode::Char('!') => app.start_exclude(),
@@ -423,6 +504,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     match app.overlay {
         Some(Overlay::Help) => draw_help(frame),
         Some(Overlay::Info) => draw_details_popup(frame, app.selected()),
+        Some(Overlay::Aggregates) => draw_aggregates_popup(frame, app),
         None => {}
     }
 }
@@ -627,6 +709,130 @@ fn draw_details_popup(
     frame.render_widget(details, popup);
 }
 
+fn aggregate_lines(
+    selection: Option<&PreparedComparison>,
+    filter: &SearchFilter,
+) -> Vec<Line<'static>> {
+    selection.map_or_else(
+        || vec![Line::from("No functions were found to compare.")],
+        |selection| {
+            let left = selection
+                .comparison
+                .function1
+                .as_ref()
+                .map(|function| &function.aggregates);
+            let right = selection
+                .comparison
+                .function2
+                .as_ref()
+                .map(|function| &function.aggregates);
+            let mut lines = vec![
+                Line::from(format!("function: {}", selection.comparison.name)),
+                Line::from(""),
+                Line::from(format!(
+                    "{:<24} {:>12} {:>12} {:>12}",
+                    "metric", "binary1", "binary2", "delta"
+                )),
+            ];
+            lines.extend(
+                aggregate_rows(left, right)
+                    .into_iter()
+                    .filter(|row| filter.matches(row.name))
+                    .map(|row| {
+                        Line::from(format!(
+                            "{:<24} {:>12} {:>12} {:>12}",
+                            row.name, row.left, row.right, row.delta
+                        ))
+                    }),
+            );
+            lines
+        },
+    )
+}
+
+fn draw_aggregates_popup(frame: &mut ratatui::Frame<'_>, app: &App) {
+    let popup = centered_rect(82, 80, frame.area());
+    frame.render_widget(Clear, popup);
+    let title = if app.aggregate_query.is_empty() {
+        "Aggregates".to_owned()
+    } else {
+        format!("Aggregates /{}", app.aggregate_query)
+    };
+    let details =
+        Paragraph::new(aggregate_lines(app.selected(), &app.aggregate_filter))
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .scroll((app.aggregate_scroll, 0))
+            .wrap(Wrap { trim: false });
+    frame.render_widget(details, popup);
+}
+
+#[derive(Clone, Debug)]
+struct AggregateRow {
+    name: &'static str,
+    left: usize,
+    right: usize,
+    delta: String,
+}
+
+fn aggregate_rows(
+    left: Option<&FunctionAggregates>,
+    right: Option<&FunctionAggregates>,
+) -> Vec<AggregateRow> {
+    macro_rules! row {
+        ($field:ident) => {{
+            let left = left.map_or(0, |aggregates| aggregates.$field);
+            let right = right.map_or(0, |aggregates| aggregates.$field);
+            AggregateRow {
+                name: stringify!($field),
+                left,
+                right,
+                delta: format_delta(left, right),
+            }
+        }};
+    }
+
+    vec![
+        row!(instructions_total),
+        row!(bytes_total),
+        row!(unique_mnemonics),
+        row!(calls),
+        row!(direct_calls),
+        row!(indirect_calls),
+        row!(branches_total),
+        row!(conditional_branches),
+        row!(unconditional_branches),
+        row!(indirect_branches),
+        row!(returns),
+        row!(memory_operands_total),
+        row!(memory_loads),
+        row!(memory_stores),
+        row!(stack_loads),
+        row!(stack_stores),
+        row!(rip_relative_loads),
+        row!(rip_relative_stores),
+        row!(atomics),
+        row!(locked_ops),
+        row!(memory_barriers),
+        row!(integer_mul),
+        row!(integer_div),
+        row!(floating_point_ops),
+        row!(simd_vector_ops),
+        row!(pushes),
+        row!(pops),
+        row!(frame_setup_ops),
+        row!(register_moves),
+        row!(lea_ops),
+    ]
+}
+
+fn format_delta(left: usize, right: usize) -> String {
+    if right >= left {
+        format!("+{}", right - left)
+    } else {
+        format!("-{}", left - right)
+    }
+}
+
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let footer_text = if app.is_searching() {
         let mut footer = format!(
@@ -642,7 +848,7 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         footer
     } else {
         format!(
-            "j/k or arrows move  / include  ! exclude  Enter diff  i info  1/2/3 resort  ? help  q quit  items: {}",
+            "j/k or arrows move  / include  ! exclude  Enter diff  i info  a aggregates  1/2/3 resort  ? help  q quit  items: {}",
             app.items.len()
         )
     };
@@ -664,6 +870,9 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("2: sort by count score"),
         Line::from("3: sort by ops score"),
         Line::from("i: toggle selection info popup"),
+        Line::from("a: toggle aggregate comparison popup"),
+        Line::from("Arrows in aggregate popup: scroll rows"),
+        Line::from("/: filter aggregate rows while aggregate popup is open"),
         Line::from("Enter: open diff editor"),
         Line::from(
             "Default view hides unique functions and shared functions that are identical or score 1.000.",
