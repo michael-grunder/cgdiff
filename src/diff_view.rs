@@ -86,7 +86,7 @@ impl DiffView {
             title: format!("Diff {}", selection.comparison.name),
             stacked_lines: diff_lines(&left, &right),
             side_by_side_lines: side_by_side_lines(&left, &right, diff_context),
-            mode: DiffViewMode::Stacked,
+            mode: DiffViewMode::SideBySide,
             scroll: 0,
             horizontal_scroll: 0,
         }
@@ -450,7 +450,7 @@ impl SideBySideLine {
 impl DiffViewMode {
     const fn label(self) -> &'static str {
         match self {
-            Self::Stacked => "stacked",
+            Self::Stacked => "vertical",
             Self::SideBySide => "side-by-side",
         }
     }

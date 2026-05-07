@@ -160,8 +160,8 @@ Options:
 - `e`: open the selected pair in the configured diff editor.
 - `j` / `k` / `h` / `l` / `PageUp` / `PageDown` / `Home`: navigate the
   built-in diff viewer.
-- `s` / `Tab`: toggle the built-in diff viewer between stacked and
-  side-by-side layouts.
+- `s` / `Tab`: toggle the built-in diff viewer between side-by-side and
+  vertical layouts.
 - `?`: show help.
 - `q` / `Esc`: quit.
 

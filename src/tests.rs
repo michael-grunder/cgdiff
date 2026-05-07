@@ -968,8 +968,7 @@ fn side_by_side_diff_pairs_replacements_and_insertions() {
 
     let mut view =
         DiffView::from_selection_with_context(&prepared, DEFAULT_DIFF_CONTEXT);
-    assert_eq!(view.mode_label(), "stacked");
-    view.toggle_mode();
+    assert_eq!(view.mode_label(), "side-by-side");
 
     let lines = view
         .rendered_lines(80)
@@ -1010,8 +1009,7 @@ fn side_by_side_diff_folds_long_initial_equal_blocks() {
         .expect("right function should exist")
         .rendered = right_rendered;
 
-    let mut view = DiffView::from_selection_with_context(&prepared, 2);
-    view.toggle_mode();
+    let view = DiffView::from_selection_with_context(&prepared, 2);
 
     let lines = view
         .rendered_lines(100)
@@ -1046,8 +1044,7 @@ fn side_by_side_diff_keeps_head_and_tail_context_between_changes() {
         .expect("right function should exist")
         .rendered = format!("    mov rbx, 2\n{shared}\n    add rbx, 2\n");
 
-    let mut view = DiffView::from_selection_with_context(&prepared, 2);
-    view.toggle_mode();
+    let view = DiffView::from_selection_with_context(&prepared, 2);
 
     let lines = view
         .rendered_lines(100)

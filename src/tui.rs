@@ -915,7 +915,7 @@ fn draw_diff_view(
             Span::raw("  "),
             Span::raw("Enter returns to the function list"),
         ]),
-        Line::from("j/k scroll  h/l pan  PgUp/PgDn page  Home left edge  s/Tab split view  e editor  q/Esc close"),
+        Line::from("j/k scroll  h/l pan  PgUp/PgDn page  Home left edge  s/Tab vertical view  e editor  q/Esc close"),
     ])
     .block(Block::default().title("Built-in diff").borders(Borders::ALL));
     frame.render_widget(header, vertical[0]);
@@ -1047,7 +1047,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("Enter: open built-in syntax highlighted diff"),
         Line::from("e: open configured diff editor"),
         Line::from("j/k/h/l/PgUp/PgDn/Home: navigate built-in diff"),
-        Line::from("s / Tab: toggle built-in diff between stacked and side-by-side"),
+        Line::from("s / Tab: toggle built-in diff between side-by-side and vertical"),
         Line::from(
             "Default view hides unique functions and shared functions that are identical or score 1.000.",
         ),
