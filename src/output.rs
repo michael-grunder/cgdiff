@@ -9,7 +9,10 @@ use tempfile::{Builder, TempPath};
 
 use crate::cli::DiffMode;
 use crate::compare::FunctionComparison;
-use crate::diff_view::tokenize_asm;
+use crate::diff_view::{
+    DIFF_PREFIX_WIDTH, DiffDisplayLine, DiffLineKind,
+    SIDE_BY_SIDE_GUTTER_WIDTH, TokenClass, side_by_side_lines, tokenize_asm,
+};
 use crate::theme::SyntaxTheme;
 
 const MAX_TEMP_FUNCTION_COMPONENT_LEN: usize = 160;
@@ -285,6 +288,211 @@ pub(crate) fn dump_comparison_diff(
         SideLabel::Right,
     );
     write_unified_diff(&mut writer, binary1, binary2, &left, &right, style)
+}
+
+pub(crate) fn dump_comparison_side_by_side_diff(
+    mut writer: impl Write,
+    comparisons: &[FunctionComparison],
+    diff_mode: DiffMode,
+    diff_context: usize,
+    width: usize,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    let mut sorted = comparisons.to_vec();
+    sort_function_comparisons(&mut sorted, diff_mode);
+
+    let Some(text_width) = side_by_side_text_width(width) else {
+        writeln!(writer, "Terminal is too narrow for side-by-side diff.")?;
+        return Ok(());
+    };
+
+    for (index, comparison) in sorted.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+
+        write_side_by_side_header(&mut writer, comparison, diff_mode, style)?;
+
+        let left = comparison.function1.as_ref().map_or_else(
+            || format!("missing left function: {}\n", comparison.name),
+            |function| function.rendered.clone(),
+        );
+        let right = comparison.function2.as_ref().map_or_else(
+            || format!("missing right function: {}\n", comparison.name),
+            |function| function.rendered.clone(),
+        );
+
+        for line in side_by_side_lines(&left, &right, diff_context) {
+            write_side_by_side_column(
+                &mut writer,
+                line.left.as_ref(),
+                text_width,
+                style,
+            )?;
+            write_side_by_side_gutter(&mut writer, style)?;
+            write_side_by_side_column(
+                &mut writer,
+                line.right.as_ref(),
+                text_width,
+                style,
+            )?;
+            writeln!(writer)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn side_by_side_text_width(width: usize) -> Option<usize> {
+    let fixed_width = (DIFF_PREFIX_WIDTH * 2) + SIDE_BY_SIDE_GUTTER_WIDTH;
+    width
+        .checked_sub(fixed_width)
+        .map(|remaining| remaining / 2)
+        .filter(|text_width| *text_width > 0)
+}
+
+fn write_side_by_side_header(
+    writer: &mut impl Write,
+    comparison: &FunctionComparison,
+    diff_mode: DiffMode,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    let header = format!(
+        "@@ {} ({}, {:.3}) @@",
+        comparison.name,
+        diff_mode.label(),
+        diff_mode.score(comparison)
+    );
+    write_meta_line(writer, style, &header, "36")
+}
+
+fn write_side_by_side_gutter(
+    writer: &mut impl Write,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    if style.color {
+        write!(writer, "{}", ansi_wrap(" | ", "90"))?;
+    } else {
+        write!(writer, " | ")?;
+    }
+    Ok(())
+}
+
+fn write_side_by_side_column(
+    writer: &mut impl Write,
+    line: Option<&DiffDisplayLine>,
+    text_width: usize,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    let Some(line) = line else {
+        write_missing_side_by_side_column(writer, text_width, style)?;
+        return Ok(());
+    };
+
+    let visible_text = visible_text(&line.text, text_width);
+    let visible_width = visible_text.chars().count();
+    write_diff_prefix(writer, line.kind, style)?;
+    write_highlighted_diff_text(
+        writer,
+        &visible_text,
+        line.kind.background(),
+        style,
+    )?;
+    write_padding(
+        writer,
+        text_width.saturating_sub(visible_width),
+        line.kind.background(),
+        style,
+    )
+}
+
+fn write_missing_side_by_side_column(
+    writer: &mut impl Write,
+    text_width: usize,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    if style.color {
+        write!(writer, "{}", ansi_wrap("  ", "90"))?;
+    } else {
+        write!(writer, "  ")?;
+    }
+    write_padding(writer, text_width, None, style)
+}
+
+fn write_diff_prefix(
+    writer: &mut impl Write,
+    kind: DiffLineKind,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    if style.color {
+        write!(
+            writer,
+            "{}",
+            ansi_wrap(kind.prefix(), diff_prefix_codes(kind))
+        )?;
+    } else {
+        write!(writer, "{}", kind.prefix())?;
+    }
+    Ok(())
+}
+
+const fn diff_prefix_codes(kind: DiffLineKind) -> &'static str {
+    match kind {
+        DiffLineKind::Context | DiffLineKind::Fold => "90",
+        DiffLineKind::Added => "1;32",
+        DiffLineKind::Removed => "1;31",
+        DiffLineKind::ChangedAdded | DiffLineKind::ChangedRemoved => "1;33",
+    }
+}
+
+fn write_highlighted_diff_text(
+    writer: &mut impl Write,
+    text: &str,
+    background: Option<Color>,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    if !style.color {
+        write!(writer, "{text}")?;
+        return Ok(());
+    }
+
+    for token in tokenize_asm(text) {
+        write!(
+            writer,
+            "{}",
+            style.theme.ansi_paint(token.class, &token.text, background)
+        )?;
+    }
+    Ok(())
+}
+
+fn write_padding(
+    writer: &mut impl Write,
+    width: usize,
+    background: Option<Color>,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    if width == 0 {
+        return Ok(());
+    }
+
+    let padding = " ".repeat(width);
+    if style.color {
+        write!(
+            writer,
+            "{}",
+            style
+                .theme
+                .ansi_paint(TokenClass::Plain, &padding, background)
+        )?;
+    } else {
+        write!(writer, "{padding}")?;
+    }
+    Ok(())
+}
+
+fn visible_text(text: &str, width: usize) -> String {
+    text.chars().take(width).collect()
 }
 
 const fn yes_or_no(present: bool) -> &'static str {

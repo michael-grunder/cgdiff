@@ -61,8 +61,11 @@ pub(crate) struct Cli {
     #[arg(long = "stdio")]
     pub(crate) stdio: bool,
     /// Dump a unified diff of listed functions instead of a table.
-    #[arg(long = "diff")]
+    #[arg(long = "diff", conflicts_with = "ddiff")]
     pub(crate) diff: bool,
+    /// Dump a side-by-side diff of listed functions instead of a table.
+    #[arg(long = "ddiff", conflicts_with = "diff")]
+    pub(crate) ddiff: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

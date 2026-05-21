@@ -8,8 +8,8 @@ use crate::output::PreparedComparison;
 use crate::theme::SyntaxTheme;
 pub(crate) use crate::theme::TokenClass;
 
-const DIFF_PREFIX_WIDTH: usize = 2;
-const SIDE_BY_SIDE_GUTTER_WIDTH: usize = 3;
+pub(crate) const DIFF_PREFIX_WIDTH: usize = 2;
+pub(crate) const SIDE_BY_SIDE_GUTTER_WIDTH: usize = 3;
 pub(crate) const DEFAULT_DIFF_CONTEXT: usize = 6;
 
 #[derive(Clone, Debug)]
@@ -30,19 +30,19 @@ pub(crate) enum DiffViewMode {
 }
 
 #[derive(Clone, Debug)]
-struct DiffDisplayLine {
-    kind: DiffLineKind,
-    text: String,
+pub(crate) struct DiffDisplayLine {
+    pub(crate) kind: DiffLineKind,
+    pub(crate) text: String,
 }
 
 #[derive(Clone, Debug)]
-struct SideBySideLine {
-    left: Option<DiffDisplayLine>,
-    right: Option<DiffDisplayLine>,
+pub(crate) struct SideBySideLine {
+    pub(crate) left: Option<DiffDisplayLine>,
+    pub(crate) right: Option<DiffDisplayLine>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DiffLineKind {
+pub(crate) enum DiffLineKind {
     Context,
     Fold,
     Added,
@@ -206,7 +206,7 @@ fn diff_lines(left: &str, right: &str) -> Vec<DiffDisplayLine> {
         .collect()
 }
 
-fn side_by_side_lines(
+pub(crate) fn side_by_side_lines(
     left: &str,
     right: &str,
     diff_context: usize,
@@ -466,7 +466,7 @@ impl DiffViewMode {
 }
 
 impl DiffLineKind {
-    const fn prefix(self) -> &'static str {
+    pub(crate) const fn prefix(self) -> &'static str {
         match self {
             Self::Context | Self::Fold => "  ",
             Self::Added | Self::ChangedAdded => "+ ",
@@ -489,7 +489,7 @@ impl DiffLineKind {
         }
     }
 
-    const fn background(self) -> Option<Color> {
+    pub(crate) const fn background(self) -> Option<Color> {
         match self {
             Self::Context | Self::Fold => None,
             Self::Added => Some(Color::Rgb(8, 48, 28)),

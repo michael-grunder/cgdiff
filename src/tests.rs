@@ -18,7 +18,8 @@ use crate::disassembly::{
 };
 use crate::filter::SearchFilter;
 use crate::output::{
-    PreparedComparison, RenderStyle, dump_comparison_diff, dump_comparisons,
+    PreparedComparison, RenderStyle, dump_comparison_diff,
+    dump_comparison_side_by_side_diff, dump_comparisons,
     temp_function_component, write_temp_disassembly,
 };
 use crate::theme::SyntaxTheme;
@@ -68,6 +69,23 @@ fn parses_diff_without_stdio() {
 
     assert!(cli.diff);
     assert!(!cli.stdio);
+}
+
+#[test]
+fn parses_side_by_side_diff_without_stdio() {
+    let cli = Cli::try_parse_from(["cgdiff", "--ddiff", "old", "new"])
+        .expect("expected --ddiff to imply stdio mode at runtime");
+
+    assert!(cli.ddiff);
+    assert!(!cli.stdio);
+}
+
+#[test]
+fn rejects_combined_vertical_and_side_by_side_diff_flags() {
+    assert!(
+        Cli::try_parse_from(["cgdiff", "--diff", "--ddiff", "old", "new"])
+            .is_err()
+    );
 }
 
 #[test]
@@ -816,6 +834,78 @@ fn stdio_diff_mentions_missing_unique_functions() {
 
     assert!(rendered.contains("-mov\n"));
     assert!(rendered.contains("+missing right function: only_left\n"));
+}
+
+#[test]
+fn dumps_sorted_stdio_side_by_side_diff_per_function() {
+    let comparisons = vec![
+        comparison_for_stdio_with_rendered(
+            "beta",
+            0.4,
+            "<beta>:\n    mov\n",
+            "<beta>:\n    mov\n",
+        ),
+        comparison_for_stdio_with_rendered(
+            "alpha",
+            0.1,
+            "<alpha>:\n    mov rax, rbx\n",
+            "<alpha>:\n    xor rax, rbx\n",
+        ),
+    ];
+    let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
+
+    dump_comparison_side_by_side_diff(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        DEFAULT_DIFF_CONTEXT,
+        80,
+        RenderStyle {
+            color: false,
+            theme: &theme,
+        },
+    )
+    .expect("failed to dump side-by-side diff");
+
+    let rendered = String::from_utf8(output).expect("expected utf-8");
+
+    assert!(rendered.starts_with("@@ alpha (combined, 0.100) @@\n"));
+    assert!(rendered.contains("-     mov rax, rbx"));
+    assert!(rendered.contains("| +     xor rax, rbx"));
+    assert!(rendered.contains("\n@@ beta (combined, 0.400) @@\n"));
+}
+
+#[test]
+fn colored_stdio_side_by_side_diff_highlights_changes() {
+    let comparisons = vec![comparison_for_stdio_with_rendered(
+        "alpha",
+        0.1,
+        "<alpha>:\n    mov rax, rbx\n",
+        "<alpha>:\n    xor rax, rbx\n",
+    )];
+    let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
+
+    dump_comparison_side_by_side_diff(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        DEFAULT_DIFF_CONTEXT,
+        80,
+        RenderStyle {
+            color: true,
+            theme: &theme,
+        },
+    )
+    .expect("failed to dump side-by-side diff");
+
+    let rendered = String::from_utf8(output).expect("expected utf-8");
+
+    assert!(rendered.contains("\u{1b}[36m@@ alpha"));
+    assert!(rendered.contains("\u{1b}[1;33m- "));
+    assert!(rendered.contains("\u{1b}[1;33m+ "));
+    assert!(rendered.contains("48;2;55;45;18"));
 }
 
 #[test]

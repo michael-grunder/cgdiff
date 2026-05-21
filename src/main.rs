@@ -31,7 +31,8 @@ use crate::diff_view::DEFAULT_DIFF_CONTEXT;
 use crate::disassembly::{BinaryAnalysis, analyze_binary};
 use crate::filter::compile_cli_filter;
 use crate::output::{
-    RenderStyle, dump_comparison_diff, dump_comparisons, prepare_comparisons,
+    RenderStyle, dump_comparison_diff, dump_comparison_side_by_side_diff,
+    dump_comparisons, prepare_comparisons,
 };
 use crate::progress::render_progress;
 use crate::theme::{
@@ -46,7 +47,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let stdio = cli.stdio || cli.diff;
+    let stdio = cli.stdio || cli.diff || cli.ddiff;
     let config = Config::load()?;
     let include = compile_cli_filter(cli.include.as_deref(), "--include")?;
     let exclude = compile_cli_filter(cli.exclude.as_deref(), "--exclude")?;
@@ -118,6 +119,7 @@ fn main() -> Result<()> {
             &cli,
             &comparisons,
             &syntax_theme,
+            diff_context,
             &binary1,
             &binary2,
         );
@@ -150,6 +152,7 @@ fn dump_stdio(
     cli: &Cli,
     comparisons: &[FunctionComparison],
     syntax_theme: &SyntaxTheme,
+    diff_context: usize,
     binary1: &Path,
     binary2: &Path,
 ) -> Result<()> {
@@ -170,10 +173,27 @@ fn dump_stdio(
                 binary2,
                 style,
             )
+        } else if cli.ddiff {
+            dump_comparison_side_by_side_diff(
+                writer,
+                comparisons,
+                cli.diff_mode,
+                diff_context,
+                stdio_side_by_side_width(is_terminal),
+                style,
+            )
         } else {
             dump_comparisons(writer, comparisons, cli.diff_mode, style)
         }
     })
+}
+
+fn stdio_side_by_side_width(is_terminal: bool) -> usize {
+    if is_terminal && let Ok((columns, _)) = crossterm::terminal::size() {
+        return usize::from(columns);
+    }
+
+    120
 }
 
 fn join_analysis(

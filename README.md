@@ -26,8 +26,9 @@ available for scripts or quick checks.
   matching.
 - Includes a built-in syntax-highlighted diff viewer for selected functions,
   with optional handoff to an external diff editor.
-- Provides `--stdio` table and unified diff output for non-interactive use,
-  with syntax highlighting and pagination when writing to a terminal.
+- Provides `--stdio` table, `--diff` unified diff, and `--ddiff` side-by-side
+  diff output for non-interactive use, with syntax highlighting and pagination
+  when writing to a terminal.
 - Embeds build metadata in `--version`, including build date and git SHA.
 
 ## Requirements
@@ -88,9 +89,15 @@ Print a unified diff of the normalized disassembly for the sorted functions:
 cgdiff --diff ./old/app ./new/app
 ```
 
-When `--stdio` or `--diff` output is written to a terminal, it is syntax
-highlighted and paged through `$PAGER` (defaulting to `less`). Both behaviors
-turn off automatically when the output is piped or redirected, so
+Print a side-by-side diff of each sorted function pair:
+
+```bash
+cgdiff --ddiff ./old/app ./new/app
+```
+
+When `--stdio`, `--diff`, or `--ddiff` output is written to a terminal, it is
+syntax highlighted and paged through `$PAGER` (defaulting to `less`). Both
+behaviors turn off automatically when the output is piped or redirected, so
 `cgdiff --diff old new > changes.patch` produces plain, unpaged text. Set
 `NO_COLOR` to disable highlighting while keeping pagination.
 
@@ -160,6 +167,7 @@ Options:
       --exclude <EXCLUDE>            Exclude by substring or `/regex/`
       --stdio                        Dump a sorted table to stdout
       --diff                         Dump a unified diff instead of a table
+      --ddiff                        Dump a side-by-side diff instead of a table
   -h, --help                         Print help
   -V, --version                      Print version
 ```
