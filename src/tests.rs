@@ -18,7 +18,7 @@ use crate::disassembly::{
 };
 use crate::filter::SearchFilter;
 use crate::output::{
-    PreparedComparison, dump_comparison_diff, dump_comparisons,
+    PreparedComparison, RenderStyle, dump_comparison_diff, dump_comparisons,
     temp_function_component, write_temp_disassembly,
 };
 use crate::theme::SyntaxTheme;
@@ -709,9 +709,18 @@ fn dumps_sorted_stdio_table() {
         comparison_for_stdio("alpha", 0.1, 0.3, 0.0, true, false),
     ];
     let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
 
-    dump_comparisons(&mut output, &comparisons, DiffMode::Combined)
-        .expect("failed to dump table");
+    dump_comparisons(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        RenderStyle {
+            color: false,
+            theme: &theme,
+        },
+    )
+    .expect("failed to dump table");
 
     let rendered = String::from_utf8(output).expect("expected utf-8");
     let mut lines = rendered.lines();
@@ -750,6 +759,7 @@ fn dumps_sorted_stdio_diff() {
         ),
     ];
     let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
 
     dump_comparison_diff(
         &mut output,
@@ -757,6 +767,10 @@ fn dumps_sorted_stdio_diff() {
         DiffMode::Combined,
         Path::new("/tmp/old.so"),
         Path::new("/tmp/new.so"),
+        RenderStyle {
+            color: false,
+            theme: &theme,
+        },
     )
     .expect("failed to dump diff");
 
@@ -783,6 +797,7 @@ fn stdio_diff_mentions_missing_unique_functions() {
         false,
     )];
     let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
 
     dump_comparison_diff(
         &mut output,
@@ -790,6 +805,10 @@ fn stdio_diff_mentions_missing_unique_functions() {
         DiffMode::Combined,
         Path::new("old.so"),
         Path::new("new.so"),
+        RenderStyle {
+            color: false,
+            theme: &theme,
+        },
     )
     .expect("failed to dump diff");
 
@@ -797,6 +816,75 @@ fn stdio_diff_mentions_missing_unique_functions() {
 
     assert!(rendered.contains("-mov\n"));
     assert!(rendered.contains("+missing right function: only_left\n"));
+}
+
+#[test]
+fn colored_stdio_table_emits_ansi_escapes() {
+    let comparisons = vec![
+        comparison_for_stdio("beta", 0.95, 0.95, 0.95, true, true),
+        comparison_for_stdio("alpha", 0.1, 0.1, 0.1, true, true),
+    ];
+    let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
+
+    dump_comparisons(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        RenderStyle {
+            color: true,
+            theme: &theme,
+        },
+    )
+    .expect("failed to dump table");
+
+    let rendered = String::from_utf8(output).expect("expected utf-8");
+    let mut lines = rendered.lines();
+
+    let header = lines.next().expect("missing header");
+    assert!(header.starts_with("\u{1b}[1m") && header.ends_with("\u{1b}[0m"));
+
+    let low_score = lines.next().expect("missing low-score row");
+    assert!(low_score.starts_with("\u{1b}[31m"));
+    let high_score = lines.next().expect("missing high-score row");
+    assert!(high_score.starts_with("\u{1b}[32m"));
+}
+
+#[test]
+fn colored_stdio_diff_highlights_changes() {
+    let comparisons = vec![comparison_for_stdio_with_rendered(
+        "alpha",
+        0.1,
+        "<alpha>:\n    mov rax, rbx\n",
+        "<alpha>:\n    xor rax, rbx\n",
+    )];
+    let mut output = Vec::new();
+    let theme = SyntaxTheme::default_theme();
+
+    dump_comparison_diff(
+        &mut output,
+        &comparisons,
+        DiffMode::Combined,
+        Path::new("old.so"),
+        Path::new("new.so"),
+        RenderStyle {
+            color: true,
+            theme: &theme,
+        },
+    )
+    .expect("failed to dump diff");
+
+    let rendered = String::from_utf8(output).expect("expected utf-8");
+
+    assert!(
+        rendered.contains("\u{1b}[1mdiff --git a/old.so b/new.so\u{1b}[0m")
+    );
+    assert!(rendered.contains("\u{1b}[36m@@ "));
+    // Removed and added markers carry bold red/green styling.
+    assert!(rendered.contains("\u{1b}[1;31m-\u{1b}[0m"));
+    assert!(rendered.contains("\u{1b}[1;32m+\u{1b}[0m"));
+    // The removed line tints its mnemonic with the removed background.
+    assert!(rendered.contains("48;2;58;24;30"));
 }
 
 #[test]

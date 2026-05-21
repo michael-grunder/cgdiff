@@ -26,7 +26,8 @@ available for scripts or quick checks.
   matching.
 - Includes a built-in syntax-highlighted diff viewer for selected functions,
   with optional handoff to an external diff editor.
-- Provides `--stdio` table and unified diff output for non-interactive use.
+- Provides `--stdio` table and unified diff output for non-interactive use,
+  with syntax highlighting and pagination when writing to a terminal.
 - Embeds build metadata in `--version`, including build date and git SHA.
 
 ## Requirements
@@ -86,6 +87,12 @@ Print a unified diff of the normalized disassembly for the sorted functions:
 ```bash
 cgdiff --diff ./old/app ./new/app
 ```
+
+When `--stdio` or `--diff` output is written to a terminal, it is syntax
+highlighted and paged through `$PAGER` (defaulting to `less`). Both behaviors
+turn off automatically when the output is piped or redirected, so
+`cgdiff --diff old new > changes.patch` produces plain, unpaged text. Set
+`NO_COLOR` to disable highlighting while keeping pagination.
 
 Include or exclude functions before comparison:
 

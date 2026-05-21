@@ -1,4 +1,3 @@
-use std::fmt::Write as _;
 use std::io::Write;
 use std::str::FromStr;
 
@@ -167,6 +166,31 @@ impl SyntaxTheme {
             self.styles.set_foreground(class, color);
         }
     }
+
+    /// Wraps `text` in ANSI SGR escapes for `class`, optionally tinting the
+    /// background. Returns the text unchanged when the class carries no style.
+    pub(crate) fn ansi_paint(
+        &self,
+        class: TokenClass,
+        text: &str,
+        background: Option<Color>,
+    ) -> String {
+        let directive = self.styles.style(class);
+        let mut codes = Vec::new();
+        if directive.bold {
+            codes.push("1".to_owned());
+        }
+        if let Some(color) = directive.foreground {
+            codes.push(ansi_foreground_code(color));
+        }
+        if let Some(color) = background {
+            codes.push(ansi_background_code(color));
+        }
+        if codes.is_empty() {
+            return text.to_owned();
+        }
+        format!("\u{1b}[{}m{text}\u{1b}[0m", codes.join(";"))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -272,17 +296,20 @@ pub(crate) fn parse_color(value: &str, field_name: &str) -> Result<Color> {
 pub(crate) fn write_theme_samples(mut writer: impl Write) -> Result<()> {
     for theme in THEMES {
         let theme = SyntaxTheme::from_definition(*theme);
-        writeln!(writer, "Theme: {}", theme.name())?;
+        writeln!(writer, "{}", theme.name())?;
+        writeln!(writer)?;
         writeln!(writer, "{}", themed_sample(&theme))?;
+        writeln!(writer)?;
     }
     Ok(())
 }
 
 fn themed_sample(theme: &SyntaxTheme) -> String {
     let mut sample = String::new();
+    push_styled(&mut sample, theme, TokenClass::Plain, "  ");
     push_styled(&mut sample, theme, TokenClass::Label, "<demo>:");
     sample.push('\n');
-    push_styled(&mut sample, theme, TokenClass::Plain, "  ");
+    push_styled(&mut sample, theme, TokenClass::Plain, "    ");
     push_styled(&mut sample, theme, TokenClass::Address, "1130:");
     sample.push(' ');
     push_styled(&mut sample, theme, TokenClass::Bytes, "48 8b 45 f8");
@@ -300,7 +327,7 @@ fn themed_sample(theme: &SyntaxTheme) -> String {
     sample.push(' ');
     push_styled(&mut sample, theme, TokenClass::Comment, "# load local");
     sample.push('\n');
-    push_styled(&mut sample, theme, TokenClass::Plain, "  ");
+    push_styled(&mut sample, theme, TokenClass::Plain, "    ");
     push_styled(&mut sample, theme, TokenClass::Address, "1138:");
     sample.push(' ');
     push_styled(&mut sample, theme, TokenClass::Bytes, "e8 13 00 00 00");
@@ -319,20 +346,7 @@ fn push_styled(
     class: TokenClass,
     text: &str,
 ) {
-    let directive = theme.styles.style(class);
-    let mut codes = Vec::new();
-    if directive.bold {
-        codes.push("1".to_owned());
-    }
-    if let Some(color) = directive.foreground {
-        codes.push(ansi_foreground_code(color));
-    }
-    if codes.is_empty() {
-        sample.push_str(text);
-        return;
-    }
-
-    let _ = write!(sample, "\u{1b}[{}m{text}\u{1b}[0m", codes.join(";"));
+    sample.push_str(&theme.ansi_paint(class, text, None));
 }
 
 fn ansi_foreground_code(color: Color) -> String {
@@ -356,6 +370,30 @@ fn ansi_foreground_code(color: Color) -> String {
         Color::Indexed(index) => format!("38;5;{index}"),
         Color::Rgb(red, green, blue) => format!("38;2;{red};{green};{blue}"),
         Color::Reset => "39".to_owned(),
+    }
+}
+
+fn ansi_background_code(color: Color) -> String {
+    match color {
+        Color::Black => "40".to_owned(),
+        Color::Red => "41".to_owned(),
+        Color::Green => "42".to_owned(),
+        Color::Yellow => "43".to_owned(),
+        Color::Blue => "44".to_owned(),
+        Color::Magenta => "45".to_owned(),
+        Color::Cyan => "46".to_owned(),
+        Color::Gray => "47".to_owned(),
+        Color::DarkGray => "100".to_owned(),
+        Color::LightRed => "101".to_owned(),
+        Color::LightGreen => "102".to_owned(),
+        Color::LightYellow => "103".to_owned(),
+        Color::LightBlue => "104".to_owned(),
+        Color::LightMagenta => "105".to_owned(),
+        Color::LightCyan => "106".to_owned(),
+        Color::White => "107".to_owned(),
+        Color::Indexed(index) => format!("48;5;{index}"),
+        Color::Rgb(red, green, blue) => format!("48;2;{red};{green};{blue}"),
+        Color::Reset => "49".to_owned(),
     }
 }
 

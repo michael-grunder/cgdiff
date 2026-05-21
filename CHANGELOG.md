@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `diff_context` or `--diff-context`.
 - Added configurable syntax highlighting themes, per-token color overrides,
   and `--list-themes` previews.
+- Added syntax highlighting and pagination to `--stdio` and `--diff` output
+  when stdout is a terminal. Output is routed through `$PAGER` (defaulting to
+  `less`), and both color and pagination are suppressed automatically when the
+  output is piped or redirected. `NO_COLOR` disables coloring.
 
 ### Documentation
 

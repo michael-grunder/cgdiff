@@ -4,12 +4,46 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use ratatui::style::Color;
 use tempfile::{Builder, TempPath};
 
 use crate::cli::DiffMode;
 use crate::compare::FunctionComparison;
+use crate::diff_view::tokenize_asm;
+use crate::theme::SyntaxTheme;
 
 const MAX_TEMP_FUNCTION_COMPONENT_LEN: usize = 160;
+
+/// ANSI background tints for added and removed unified-diff lines. They mirror
+/// the built-in TUI diff viewer so paged and interactive output stay aligned.
+const REMOVED_BACKGROUND: Color = Color::Rgb(58, 24, 30);
+const ADDED_BACKGROUND: Color = Color::Rgb(8, 48, 28);
+
+/// Styling applied to non-interactive stdio output.
+///
+/// `color` is enabled only when stdout is a terminal; piped output stays plain
+/// so it can be parsed or redirected without escape sequences.
+#[derive(Clone, Copy)]
+pub(crate) struct RenderStyle<'a> {
+    pub(crate) color: bool,
+    pub(crate) theme: &'a SyntaxTheme,
+}
+
+fn ansi_wrap(text: &str, codes: &str) -> String {
+    format!("\u{1b}[{codes}m{text}\u{1b}[0m")
+}
+
+/// Picks a row color for a similarity score: red flags large differences,
+/// yellow moderate ones, and green near-identical functions.
+const fn score_color_code(score: f64) -> &'static str {
+    if score < 0.5 {
+        "31"
+    } else if score < 0.9 {
+        "33"
+    } else {
+        "32"
+    }
+}
 
 pub(crate) struct PreparedComparison {
     pub(crate) comparison: FunctionComparison,
@@ -172,6 +206,7 @@ pub(crate) fn dump_comparisons(
     mut writer: impl Write,
     comparisons: &[FunctionComparison],
     diff_mode: DiffMode,
+    style: RenderStyle<'_>,
 ) -> Result<()> {
     let mut sorted = comparisons.to_vec();
     sort_function_comparisons(&mut sorted, diff_mode);
@@ -186,49 +221,46 @@ pub(crate) fn dump_comparisons(
         .max("Function".len());
     let headers = comparison_table_headers(diff_mode, show_presence_columns);
 
-    if show_presence_columns {
-        writeln!(
-            writer,
-            "{:<function_width$}  {:>8}  {:>9}  {:>8}  {:>4}  {:>4}",
-            headers[0],
-            headers[1],
-            headers[2],
-            headers[3],
-            headers[4],
-            headers[5],
-        )?;
+    let header_line =
+        format_table_row(&headers, function_width, show_presence_columns);
+    if style.color {
+        writeln!(writer, "{}", ansi_wrap(&header_line, "1"))?;
     } else {
-        writeln!(
-            writer,
-            "{:<function_width$}  {:>8}  {:>9}  {:>8}",
-            headers[0], headers[1], headers[2], headers[3],
-        )?;
+        writeln!(writer, "{header_line}")?;
     }
 
     for comparison in sorted {
         let row =
             comparison_table_row(&comparison, diff_mode, show_presence_columns);
-        if show_presence_columns {
-            writeln!(
-                writer,
-                "{:<function_width$}  {:>8}  {:>9}  {:>8}  {:>4}  {:>4}",
-                row.cells[0],
-                row.cells[1],
-                row.cells[2],
-                row.cells[3],
-                row.cells[4],
-                row.cells[5],
-            )?;
+        let line =
+            format_table_row(&row.cells, function_width, show_presence_columns);
+        if style.color {
+            let codes = score_color_code(diff_mode.score(&comparison));
+            writeln!(writer, "{}", ansi_wrap(&line, codes))?;
         } else {
-            writeln!(
-                writer,
-                "{:<function_width$}  {:>8}  {:>9}  {:>8}",
-                row.cells[0], row.cells[1], row.cells[2], row.cells[3],
-            )?;
+            writeln!(writer, "{line}")?;
         }
     }
 
     Ok(())
+}
+
+fn format_table_row(
+    cells: &[String],
+    function_width: usize,
+    show_presence_columns: bool,
+) -> String {
+    if show_presence_columns {
+        format!(
+            "{:<function_width$}  {:>8}  {:>9}  {:>8}  {:>4}  {:>4}",
+            cells[0], cells[1], cells[2], cells[3], cells[4], cells[5],
+        )
+    } else {
+        format!(
+            "{:<function_width$}  {:>8}  {:>9}  {:>8}",
+            cells[0], cells[1], cells[2], cells[3],
+        )
+    }
 }
 
 pub(crate) fn dump_comparison_diff(
@@ -237,6 +269,7 @@ pub(crate) fn dump_comparison_diff(
     diff_mode: DiffMode,
     binary1: &Path,
     binary2: &Path,
+    style: RenderStyle<'_>,
 ) -> Result<()> {
     let mut sorted = comparisons.to_vec();
     sort_function_comparisons(&mut sorted, diff_mode);
@@ -251,7 +284,7 @@ pub(crate) fn dump_comparison_diff(
         ComparisonSide::Right,
         SideLabel::Right,
     );
-    write_unified_diff(&mut writer, binary1, binary2, &left, &right)
+    write_unified_diff(&mut writer, binary1, binary2, &left, &right, style)
 }
 
 const fn yes_or_no(present: bool) -> &'static str {
@@ -323,6 +356,7 @@ fn write_unified_diff(
     binary2: &Path,
     left: &str,
     right: &str,
+    style: RenderStyle<'_>,
 ) -> Result<()> {
     if left == right {
         return Ok(());
@@ -333,24 +367,92 @@ fn write_unified_diff(
     let left_lines = split_diff_lines(left);
     let right_lines = split_diff_lines(right);
 
-    writeln!(writer, "diff --git {left_path} {right_path}")?;
-    writeln!(writer, "--- {left_path}")?;
-    writeln!(writer, "+++ {right_path}")?;
-    writeln!(
+    write_meta_line(
         writer,
-        "@@ -{} +{} @@",
-        unified_range(left_lines.len()),
-        unified_range(right_lines.len())
+        style,
+        &format!("diff --git {left_path} {right_path}"),
+        "1",
+    )?;
+    write_meta_line(writer, style, &format!("--- {left_path}"), "1")?;
+    write_meta_line(writer, style, &format!("+++ {right_path}"), "1")?;
+    write_meta_line(
+        writer,
+        style,
+        &format!(
+            "@@ -{} +{} @@",
+            unified_range(left_lines.len()),
+            unified_range(right_lines.len())
+        ),
+        "36",
     )?;
 
     for line in diff_lines(&left_lines, &right_lines) {
         match line {
-            DiffLine::Context(text) => writeln!(writer, " {text}")?,
-            DiffLine::Delete(text) => writeln!(writer, "-{text}")?,
-            DiffLine::Insert(text) => writeln!(writer, "+{text}")?,
+            DiffLine::Context(text) => {
+                write_diff_content_line(writer, " ", "", text, None, style)?;
+            }
+            DiffLine::Delete(text) => write_diff_content_line(
+                writer,
+                "-",
+                "1;31",
+                text,
+                Some(REMOVED_BACKGROUND),
+                style,
+            )?,
+            DiffLine::Insert(text) => write_diff_content_line(
+                writer,
+                "+",
+                "1;32",
+                text,
+                Some(ADDED_BACKGROUND),
+                style,
+            )?,
         }
     }
 
+    Ok(())
+}
+
+fn write_meta_line(
+    writer: &mut impl Write,
+    style: RenderStyle<'_>,
+    text: &str,
+    codes: &str,
+) -> Result<()> {
+    if style.color {
+        writeln!(writer, "{}", ansi_wrap(text, codes))?;
+    } else {
+        writeln!(writer, "{text}")?;
+    }
+    Ok(())
+}
+
+fn write_diff_content_line(
+    writer: &mut impl Write,
+    marker: &str,
+    marker_codes: &str,
+    text: &str,
+    background: Option<Color>,
+    style: RenderStyle<'_>,
+) -> Result<()> {
+    if !style.color {
+        writeln!(writer, "{marker}{text}")?;
+        return Ok(());
+    }
+
+    if marker_codes.is_empty() {
+        write!(writer, "{marker}")?;
+    } else {
+        write!(writer, "{}", ansi_wrap(marker, marker_codes))?;
+    }
+    for token in tokenize_asm(text) {
+        write!(
+            writer,
+            "{}",
+            style.theme.ansi_paint(token.class, &token.text, background)
+        )?;
+    }
+    writeln!(writer)?;
     Ok(())
 }
 

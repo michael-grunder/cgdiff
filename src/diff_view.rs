@@ -212,8 +212,8 @@ fn side_by_side_lines(
     diff_context: usize,
 ) -> Vec<SideBySideLine> {
     let diff = TextDiff::from_lines(left, right);
-    let old_lines = diff.old_slices();
-    let new_lines = diff.new_slices();
+    let old_lines: Vec<&str> = diff.iter_old_slices().collect();
+    let new_lines: Vec<&str> = diff.iter_new_slices().collect();
     let mut lines = Vec::new();
     let ops = diff.ops();
 
@@ -222,8 +222,8 @@ fn side_by_side_lines(
         match tag {
             DiffTag::Equal => {
                 lines.extend(folded_equal_lines(
-                    old_lines,
-                    new_lines,
+                    &old_lines,
+                    &new_lines,
                     old_range,
                     new_range,
                     EqualBlockPosition {

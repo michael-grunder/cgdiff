@@ -8,6 +8,7 @@ pub(crate) mod diff_view;
 pub(crate) mod disassembly;
 pub(crate) mod filter;
 pub(crate) mod output;
+pub(crate) mod pager;
 pub(crate) mod progress;
 pub(crate) mod theme;
 pub(crate) mod tui;
@@ -24,13 +25,13 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 
 use crate::cli::Cli;
-use crate::compare::build_comparisons;
+use crate::compare::{FunctionComparison, build_comparisons};
 use crate::config::{Config, HighlightColor};
 use crate::diff_view::DEFAULT_DIFF_CONTEXT;
 use crate::disassembly::{BinaryAnalysis, analyze_binary};
 use crate::filter::compile_cli_filter;
 use crate::output::{
-    dump_comparison_diff, dump_comparisons, prepare_comparisons,
+    RenderStyle, dump_comparison_diff, dump_comparisons, prepare_comparisons,
 };
 use crate::progress::render_progress;
 use crate::theme::{
@@ -113,18 +114,13 @@ fn main() -> Result<()> {
         include.as_ref(),
     );
     if stdio {
-        if cli.diff {
-            dump_comparison_diff(
-                io::stdout(),
-                &comparisons,
-                cli.diff_mode,
-                &binary1,
-                &binary2,
-            )?;
-        } else {
-            dump_comparisons(io::stdout(), &comparisons, cli.diff_mode)?;
-        }
-        return Ok(());
+        return dump_stdio(
+            &cli,
+            &comparisons,
+            &syntax_theme,
+            &binary1,
+            &binary2,
+        );
     }
 
     let prepared = prepare_comparisons(comparisons)?;
@@ -144,6 +140,40 @@ fn main() -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Renders the non-interactive `--stdio`/`--diff` output.
+///
+/// Output is colorized and routed through a pager when stdout is a terminal;
+/// piping to a file or another process yields plain, unpaged text.
+fn dump_stdio(
+    cli: &Cli,
+    comparisons: &[FunctionComparison],
+    syntax_theme: &SyntaxTheme,
+    binary1: &Path,
+    binary2: &Path,
+) -> Result<()> {
+    let is_terminal = pager::stdout_is_terminal();
+    let color = is_terminal && std::env::var_os("NO_COLOR").is_none();
+    let style = RenderStyle {
+        color,
+        theme: syntax_theme,
+    };
+
+    pager::paginate(is_terminal, |writer| {
+        if cli.diff {
+            dump_comparison_diff(
+                writer,
+                comparisons,
+                cli.diff_mode,
+                binary1,
+                binary2,
+                style,
+            )
+        } else {
+            dump_comparisons(writer, comparisons, cli.diff_mode, style)
+        }
+    })
 }
 
 fn join_analysis(
