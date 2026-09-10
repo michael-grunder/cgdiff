@@ -66,6 +66,14 @@ pub(crate) struct Cli {
     /// Dump a side-by-side diff of listed functions instead of a table.
     #[arg(long = "ddiff", conflicts_with = "diff")]
     pub(crate) ddiff: bool,
+    /// Write the cleaned, filtered disassembly of both binaries into DIR as
+    /// `a.s` and `b.s` instead of opening the TUI.
+    #[arg(
+        long = "export",
+        value_name = "DIR",
+        conflicts_with_all = ["stdio", "diff", "ddiff"]
+    )]
+    pub(crate) export: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

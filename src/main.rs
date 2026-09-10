@@ -24,7 +24,7 @@ use std::thread;
 use anyhow::{Result, anyhow};
 use clap::Parser;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, DiffMode};
 use crate::compare::{FunctionComparison, build_comparisons};
 use crate::config::{Config, HighlightColor};
 use crate::diff_view::DEFAULT_DIFF_CONTEXT;
@@ -32,7 +32,7 @@ use crate::disassembly::{BinaryAnalysis, analyze_binary};
 use crate::filter::compile_cli_filter;
 use crate::output::{
     RenderStyle, dump_comparison_diff, dump_comparison_side_by_side_diff,
-    dump_comparisons, prepare_comparisons,
+    dump_comparisons, export_comparison_disassembly, prepare_comparisons,
 };
 use crate::progress::render_progress;
 use crate::theme::{
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let stdio = cli.stdio || cli.diff || cli.ddiff;
+    let stdio = cli.stdio || cli.diff || cli.ddiff || cli.export.is_some();
     let config = Config::load()?;
     let include = compile_cli_filter(cli.include.as_deref(), "--include")?;
     let exclude = compile_cli_filter(cli.exclude.as_deref(), "--exclude")?;
@@ -114,6 +114,10 @@ fn main() -> Result<()> {
         exclude.as_ref(),
         include.as_ref(),
     );
+    if let Some(directory) = cli.export.as_deref() {
+        return export_disassembly(directory, &comparisons, cli.diff_mode);
+    }
+
     if stdio {
         return dump_stdio(
             &cli,
@@ -141,6 +145,23 @@ fn main() -> Result<()> {
         },
     )?;
 
+    Ok(())
+}
+
+/// Writes the `--export` disassembly files and reports where they landed.
+fn export_disassembly(
+    directory: &Path,
+    comparisons: &[FunctionComparison],
+    diff_mode: DiffMode,
+) -> Result<()> {
+    let exported =
+        export_comparison_disassembly(directory, comparisons, diff_mode)?;
+    println!(
+        "exported {} function(s)\n  {}\n  {}",
+        exported.function_count(),
+        exported.left().display(),
+        exported.right().display()
+    );
     Ok(())
 }
 

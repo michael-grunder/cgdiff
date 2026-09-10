@@ -18,9 +18,10 @@ use crate::disassembly::{
 };
 use crate::filter::SearchFilter;
 use crate::output::{
-    PreparedComparison, RenderStyle, dump_comparison_diff,
-    dump_comparison_side_by_side_diff, dump_comparisons,
-    temp_function_component, write_temp_disassembly,
+    EXPORT_LEFT_FILE_NAME, EXPORT_RIGHT_FILE_NAME, PreparedComparison,
+    RenderStyle, dump_comparison_diff, dump_comparison_side_by_side_diff,
+    dump_comparisons, export_comparison_disassembly, temp_function_component,
+    write_temp_disassembly,
 };
 use crate::theme::SyntaxTheme;
 use crate::tui::{App, AppOptions};
@@ -28,9 +29,10 @@ use clap::Parser;
 use ratatui::text::Line;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, tempdir};
 
 #[test]
 fn parses_short_include_function_flags() {
@@ -758,6 +760,89 @@ fn dumps_sorted_stdio_table() {
     assert!(second.starts_with("beta"));
     assert!(second.contains("       1          1     0.400"));
     assert!(second.ends_with(" yes   yes"));
+}
+
+#[test]
+fn exports_sorted_disassembly_files() {
+    let comparisons = vec![
+        comparison_for_stdio_with_rendered(
+            "beta",
+            0.4,
+            "<beta>:\n    mov\n",
+            "<beta>:\n    mov\n",
+        ),
+        comparison_for_stdio_with_rendered(
+            "alpha",
+            0.1,
+            "<alpha>:\n    mov\n",
+            "<alpha>:\n    xor\n",
+        ),
+    ];
+    let directory = tempdir().expect("failed to create temp directory");
+
+    let exported = export_comparison_disassembly(
+        directory.path(),
+        &comparisons,
+        DiffMode::Combined,
+    )
+    .expect("failed to export disassembly");
+
+    assert_eq!(exported.function_count(), 2);
+    assert_eq!(
+        exported.left(),
+        directory.path().join(EXPORT_LEFT_FILE_NAME)
+    );
+    assert_eq!(
+        exported.right(),
+        directory.path().join(EXPORT_RIGHT_FILE_NAME)
+    );
+
+    let left = fs::read_to_string(exported.left()).expect("missing left file");
+    let right =
+        fs::read_to_string(exported.right()).expect("missing right file");
+
+    assert_eq!(left, "<alpha>:\n    mov\n\n<beta>:\n    mov\n");
+    assert_eq!(right, "<alpha>:\n    xor\n\n<beta>:\n    mov\n");
+    assert_eq!(left.lines().count(), right.lines().count());
+}
+
+#[test]
+fn exports_placeholders_for_unique_functions() {
+    let comparisons = vec![comparison_for_stdio(
+        "only_left",
+        0.0,
+        0.0,
+        0.0,
+        true,
+        false,
+    )];
+    let directory = tempdir().expect("failed to create temp directory");
+
+    let exported = export_comparison_disassembly(
+        directory.path(),
+        &comparisons,
+        DiffMode::Combined,
+    )
+    .expect("failed to export disassembly");
+
+    let right =
+        fs::read_to_string(exported.right()).expect("missing right file");
+
+    assert_eq!(right, "missing right function: only_left\n");
+}
+
+#[test]
+fn export_creates_missing_directories() {
+    let directory = tempdir().expect("failed to create temp directory");
+    let nested = directory.path().join("nested").join("asm");
+
+    let exported =
+        export_comparison_disassembly(&nested, &[], DiffMode::Combined)
+            .expect("failed to export disassembly");
+
+    assert_eq!(exported.function_count(), 0);
+    assert!(exported.left().is_file());
+    assert!(exported.right().is_file());
 }
 
 #[test]

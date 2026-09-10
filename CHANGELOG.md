@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalized disassembly.
 - Added `--ddiff` output for paged, syntax-highlighted side-by-side diffs of
   listed functions' normalized disassembly.
+- Added `--export <DIR>`, which writes the cleaned, filtered disassembly of
+  both binaries as aligned `a.s` and `b.s` files for diffing every listed
+  function in an external editor.
 - Added a built-in syntax-highlighted TUI diff viewer for selected functions,
   while preserving external diff editor handoff with `e`.
 - Added side-by-side layout mode for the built-in TUI diff viewer.

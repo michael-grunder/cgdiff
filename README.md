@@ -29,6 +29,9 @@ available for scripts or quick checks.
 - Provides `--stdio` table, `--diff` unified diff, and `--ddiff` side-by-side
   diff output for non-interactive use, with syntax highlighting and pagination
   when writing to a terminal.
+- Exports the cleaned, filtered disassembly of both binaries as two aligned
+  `.s` files with `--export`, for diffing every listed function in an external
+  editor.
 - Embeds build metadata in `--version`, including build date and git SHA.
 
 ## Requirements
@@ -94,6 +97,23 @@ Print a side-by-side diff of each sorted function pair:
 ```bash
 cgdiff --ddiff ./old/app ./new/app
 ```
+
+Export the normalized disassembly of every listed function as two `.s` files:
+
+```bash
+cgdiff --export ./asm ./old/app ./new/app
+vim -d ./asm/a.s ./asm/b.s
+```
+
+`--export` writes `a.s` for the first binary and `b.s` for the second. Both
+files contain the same functions in the same order, separated by a blank line
+and using the same normalization and filtering as the TUI, so functions stay
+aligned in an external diff tool. Functions hidden by default (unique or
+effectively identical ones) are omitted unless `--include-unique` or
+`--include-identical` is passed, and `--include`/`--exclude` narrow the set
+further. A function present in only one binary is replaced on the other side by
+a `missing left function: <name>` or `missing right function: <name>` line so
+both files stay line-aligned per function.
 
 When `--stdio`, `--diff`, or `--ddiff` output is written to a terminal, it is
 syntax highlighted and paged through `$PAGER` (defaulting to `less`). Both
@@ -168,6 +188,7 @@ Options:
       --stdio                        Dump a sorted table to stdout
       --diff                         Dump a unified diff instead of a table
       --ddiff                        Dump a side-by-side diff instead of a table
+      --export <DIR>                 Write cleaned `a.s` and `b.s` into DIR
   -h, --help                         Print help
   -V, --version                      Print version
 ```

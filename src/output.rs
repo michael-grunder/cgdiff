@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt::Write as FmtWrite;
+use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ratatui::style::Color;
@@ -16,6 +17,11 @@ use crate::diff_view::{
 use crate::theme::SyntaxTheme;
 
 const MAX_TEMP_FUNCTION_COMPONENT_LEN: usize = 160;
+
+/// File names written by [`export_comparison_disassembly`]. They mirror the
+/// `a/` and `b/` prefixes used by the unified diff output.
+pub(crate) const EXPORT_LEFT_FILE_NAME: &str = "a.s";
+pub(crate) const EXPORT_RIGHT_FILE_NAME: &str = "b.s";
 
 /// ANSI background tints for added and removed unified-diff lines. They mirror
 /// the built-in TUI diff viewer so paged and interactive output stay aligned.
@@ -266,6 +272,89 @@ fn format_table_row(
     }
 }
 
+/// Paths written by [`export_comparison_disassembly`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExportedDisassembly {
+    left: PathBuf,
+    right: PathBuf,
+    function_count: usize,
+}
+
+impl ExportedDisassembly {
+    /// Path of the file holding the first binary's disassembly.
+    pub(crate) fn left(&self) -> &Path {
+        &self.left
+    }
+
+    /// Path of the file holding the second binary's disassembly.
+    pub(crate) fn right(&self) -> &Path {
+        &self.right
+    }
+
+    /// Number of functions written to each file.
+    pub(crate) const fn function_count(&self) -> usize {
+        self.function_count
+    }
+}
+
+/// Writes the normalized disassembly of every listed function into `directory`
+/// as two `.s` files, one per binary.
+///
+/// Both files contain the same functions in the same order, so a function that
+/// exists in only one binary is replaced by a `missing ... function:`
+/// placeholder on the other side. That keeps the two files aligned for
+/// external diff tools such as `vim -d`.
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be created or either file cannot
+/// be written.
+pub(crate) fn export_comparison_disassembly(
+    directory: &Path,
+    comparisons: &[FunctionComparison],
+    diff_mode: DiffMode,
+) -> Result<ExportedDisassembly> {
+    let mut sorted = comparisons.to_vec();
+    sort_function_comparisons(&mut sorted, diff_mode);
+
+    fs::create_dir_all(directory).with_context(|| {
+        format!("failed to create export directory {}", directory.display())
+    })?;
+
+    let left = directory.join(EXPORT_LEFT_FILE_NAME);
+    let right = directory.join(EXPORT_RIGHT_FILE_NAME);
+    write_export_file(
+        &left,
+        &aggregate_rendered_functions(
+            &sorted,
+            ComparisonSide::Left,
+            SideLabel::Left,
+            FunctionSpacing::BlankLineBetween,
+        ),
+    )?;
+    write_export_file(
+        &right,
+        &aggregate_rendered_functions(
+            &sorted,
+            ComparisonSide::Right,
+            SideLabel::Right,
+            FunctionSpacing::BlankLineBetween,
+        ),
+    )?;
+
+    Ok(ExportedDisassembly {
+        left,
+        right,
+        function_count: sorted.len(),
+    })
+}
+
+fn write_export_file(path: &Path, contents: &str) -> Result<()> {
+    fs::write(path, contents).with_context(|| {
+        format!("failed to write disassembly to {}", path.display())
+    })
+}
+
 pub(crate) fn dump_comparison_diff(
     mut writer: impl Write,
     comparisons: &[FunctionComparison],
@@ -281,11 +370,13 @@ pub(crate) fn dump_comparison_diff(
         &sorted,
         ComparisonSide::Left,
         SideLabel::Left,
+        FunctionSpacing::Compact,
     );
     let right = aggregate_rendered_functions(
         &sorted,
         ComparisonSide::Right,
         SideLabel::Right,
+        FunctionSpacing::Compact,
     );
     write_unified_diff(&mut writer, binary1, binary2, &left, &right, style)
 }
@@ -499,6 +590,17 @@ const fn yes_or_no(present: bool) -> &'static str {
     if present { "yes" } else { "no" }
 }
 
+/// Whether aggregated function text separates entries with a blank line.
+///
+/// Unified diff output keeps functions back-to-back, while exported `.s` files
+/// add a blank line so editors and diff algorithms anchor on function
+/// boundaries.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FunctionSpacing {
+    Compact,
+    BlankLineBetween,
+}
+
 #[derive(Clone, Copy)]
 enum ComparisonSide {
     Left,
@@ -515,10 +617,14 @@ fn aggregate_rendered_functions(
     comparisons: &[FunctionComparison],
     side: ComparisonSide,
     missing_side: SideLabel,
+    spacing: FunctionSpacing,
 ) -> String {
     let mut output = String::new();
     for comparison in comparisons {
         if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        if spacing == FunctionSpacing::BlankLineBetween && !output.is_empty() {
             output.push('\n');
         }
 
